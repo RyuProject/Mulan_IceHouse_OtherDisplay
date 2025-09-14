@@ -140,46 +140,49 @@ static void btn_ready_cb(lv_event_t *e)
 
 // 创建订单行（动态添加到 UI）
 static void create_dynamic_order_row(int order_num, const char *dishes) {
-    // lv_obj_t *row = lv_obj_create(orders_container);
-    // lv_obj_set_size(row, LV_PCT(100), 80);
-    // lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    // lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_SPACE_BETWEEN);
-    // lv_obj_set_style_pad_all(row, 10, 0);
-    // lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *row = lv_obj_create(orders_container);
+    lv_obj_set_size(row, LV_PCT(100), 80);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_SPACE_BETWEEN);
+    lv_obj_set_style_pad_all(row, 10, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    // 将新订单行移动到容器顶部
+    lv_obj_move_to_index(row, 0);
 
     // 左侧：订单信息（垂直）
-    lv_obj_t *left_container = lv_obj_create(orders_container);
+    lv_obj_t *left_container = lv_obj_create(row);
     lv_obj_set_flex_flow(left_container, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(left_container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_width(left_container, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(left_container, 5, 0);
 
-    lv_obj_t *order_label = lv_label_create(left_container);
-    lv_label_set_text_fmt(order_label, "第 %d 单", order_num);
-    lv_obj_set_style_text_font(order_label, &lv_font_mulan_14, 0);
-    lv_obj_align(order_label, LV_ALIGN_TOP_LEFT, 0, 0);
+    // lv_obj_t *order_label = lv_label_create(left_container);
+    // lv_label_set_text_fmt(order_label, "第 %d 单", order_num);
+    // lv_obj_set_style_text_font(order_label, &lv_font_mulan_14, 0);
+    // lv_obj_align(order_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
     lv_obj_t *dish_label = lv_label_create(left_container);
-    lv_label_set_text_fmt(dish_label, "菜品：%s", dishes);
+    lv_label_set_text_fmt(dish_label, "%s", dishes);
     lv_obj_set_style_text_font(dish_label, &lv_font_mulan_14, 0);
     lv_obj_align(dish_label, LV_ALIGN_TOP_LEFT, 0, 25);
 
     // 右侧：已出餐按钮
-    // lv_obj_t *btn_ready = lv_btn_create(row);
-    // lv_obj_set_size(btn_ready, 80, 30);
-    // lv_obj_align(btn_ready, LV_ALIGN_TOP_RIGHT, -5, 5);
-    // lv_obj_set_style_bg_color(btn_ready, lv_color_hex(0x007AFF), 0);  // 初始为蓝色
-    // lv_obj_set_style_radius(btn_ready, 4, 0);
-    // lv_obj_clear_flag(btn_ready, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *btn_ready = lv_btn_create(row);
+    lv_obj_set_size(btn_ready, 80, 30);
+    lv_obj_align(btn_ready, LV_ALIGN_TOP_RIGHT, -5, 5);
+    lv_obj_set_style_bg_color(btn_ready, lv_color_hex(0x007AFF), 0);  // 初始为蓝色
+    lv_obj_set_style_radius(btn_ready, 4, 0);
+    lv_obj_clear_flag(btn_ready, LV_OBJ_FLAG_SCROLLABLE);
 
-    // // 按钮文字
-    // lv_obj_t *btn_label = lv_label_create(btn_ready);
-    // lv_label_set_text(btn_label, "已出餐");
-    // lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
-    // lv_obj_center(btn_label);
+    // 按钮文字
+    lv_obj_t *btn_label = lv_label_create(btn_ready);
+    lv_label_set_text(btn_label, "已出餐");
+    lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
+    lv_obj_center(btn_label);
 
-    // // 添加点击事件
-    // lv_obj_add_event_cb(btn_ready, btn_ready_cb, LV_EVENT_CLICKED, NULL);
+    // 添加点击事件
+    lv_obj_add_event_cb(btn_ready, btn_ready_cb, LV_EVENT_CLICKED, NULL);
 }
 
 // 初始化订单列表 UI
@@ -456,8 +459,8 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             // 加锁保护UI更新
             bsp_display_lock(portMAX_DELAY);
             
-            // 清空容器并重新创建内容
-            lv_obj_clean(orders_container);
+            // 不清空容器，新订单将添加到顶部
+            // lv_obj_clean(orders_container); // 注释掉清空容器的代码
             
             // 解析订单ID
             cJSON *id = cJSON_GetObjectItem(root, "orderId");
