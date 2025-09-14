@@ -26,6 +26,7 @@
 #include "cJSON.h"
 #include "lv_font_mulan_14.c"
 #include <ctype.h>
+#include <stdlib.h>
 
 /* 十六进制字符转换为数值 */
 static uint8_t hex_char_to_value(char c) {
@@ -71,7 +72,12 @@ static void popup_timer_cb(lv_timer_t *timer);
 static void show_popup_message(const char *message, uint32_t duration_ms);
 
 static lv_obj_t *order_card = NULL;
+static lv_obj_t *orders_container = NULL;
 LV_FONT_DECLARE(lv_font_mulan_14);
+
+// 动态订单列表相关函数声明
+static void create_dynamic_order_row(int order_num, const char *dishes);
+static void btn_ready_cb(lv_event_t *e);
 
 // 定时器回调函数实现
 static void popup_timer_cb(lv_timer_t *timer) {
@@ -108,31 +114,65 @@ static void show_popup_message(const char *message, uint32_t duration_ms)
     lv_timer_set_repeat_count(timer, 1);
 }
 
+static void btn_ready_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target(e);
+    lv_obj_t *row = lv_obj_get_parent(btn);
+    lv_obj_del(row);
+}
+
+// 创建订单行（动态添加到 UI）
+static void create_dynamic_order_row(int order_num, const char *dishes) {
+    lv_obj_t *row = lv_obj_create(orders_container);
+    lv_obj_set_size(row, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_SPACE_BETWEEN);
+    lv_obj_set_style_pad_all(row, 10, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *left = lv_obj_create(row);
+    lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(left, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_width(left, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(left, 5, 0);
+
+    // lv_obj_t *order_label = lv_label_create(left);
+    // lv_label_set_text_fmt(order_label, "第 %d 单", order_num);
+    // lv_obj_set_style_text_font(order_label, &lv_font_mulan_14, 0);
+    // lv_obj_align(order_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *dish_label = lv_label_create(left);
+    lv_label_set_text_fmt(dish_label, "菜品：%s", dishes);
+    lv_obj_set_style_text_font(dish_label, &lv_font_mulan_14, 0);
+    lv_obj_align(dish_label, LV_ALIGN_TOP_LEFT, 0, 25);
+
+    // lv_obj_t *btn = lv_btn_create(row);
+    // lv_obj_set_size(btn, 80, 30);
+    // lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -5, 5);
+    // lv_obj_set_style_bg_color(btn, lv_color_hex(0x007AFF), 0);
+    // lv_obj_set_style_radius(btn, 4, 0);
+    // lv_obj_t *btn_label = lv_label_create(btn);
+    // lv_label_set_text(btn_label, "已出餐");
+    // lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
+    // lv_obj_center(btn_label);
+    // lv_obj_add_event_cb(btn, btn_ready_cb, LV_EVENT_CLICKED, NULL);
+}
+
+// 初始化订单列表 UI
 static void create_order_ui(void)
 {
-
-        // 测试中文字
-
-    // lv_obj_t *label = lv_label_create(lv_scr_act());
-    // lv_obj_set_style_text_font(label, &lv_font_mulan_14, 0);
-    // lv_label_set_text(label, "测试");
-    // lv_obj_center(label);
-
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0xf5f5f5), 0);
 
-    // 创建订单卡片
-    order_card = lv_obj_create(scr);
-    lv_obj_set_size(order_card, lv_pct(100), 300);
-    lv_obj_align(order_card, LV_ALIGN_TOP_MID, 0, 20);
-    lv_obj_set_style_border_width(order_card, 2, 0);
-    lv_obj_set_style_border_color(order_card, lv_color_hex(0xCCCCCC), 0);
-    lv_obj_set_style_radius(order_card, 10, 0);
-    lv_obj_set_style_pad_all(order_card, 10, 0);
-    
+    // 创建订单容器
+    orders_container = lv_obj_create(scr);
+    lv_obj_set_size(orders_container, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_flex_flow(orders_container, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(orders_container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scrollbar_mode(orders_container, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_pad_all(orders_container, 10, 0);
 
     // 初始显示等待数据
-    lv_obj_t *waiting_label = lv_label_create(order_card);
+    lv_obj_t *waiting_label = lv_label_create(orders_container);
     lv_obj_set_style_text_font(waiting_label, &lv_font_mulan_14, 0);
     lv_label_set_text(waiting_label, "等待订单数据...");
     lv_obj_center(waiting_label);
@@ -308,11 +348,28 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         }
 
         bool is_message = false;
+        bool is_order = false;
         
         // 检查是否为消息类型(type == "info")
         cJSON *type = cJSON_GetObjectItem(root, "type");
-        if (type && cJSON_IsString(type) && strcmp(type->valuestring, "info") == 0) {
-            is_message = true;
+        if (type && cJSON_IsString(type)) {
+            if (strcmp(type->valuestring, "info") == 0) {
+                is_message = true;
+            } else if (strcmp(type->valuestring, "order") == 0) {
+                is_order = true;
+                // 兼容两种格式：有command字段和没有command字段的订单
+                cJSON *command = cJSON_GetObjectItem(root, "command");
+                if (command && cJSON_IsString(command)) {
+                    // 如果有command字段，检查是否为display_order
+                    if (strcmp(command->valuestring, "display_order") != 0) {
+                        is_order = false; // 不是要显示的订单
+                    }
+                }
+                // 如果没有command字段，默认认为是显示订单
+            }
+        }
+        
+        if (is_message) {
             // 处理消息类型
             cJSON *content = cJSON_GetObjectItem(root, "content");
             if (content && cJSON_IsString(content)) {
@@ -370,69 +427,100 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             }
         }
 
-        if (!is_message) {
+        if (is_order) {
             // 处理订单数据
             // 加锁保护UI更新
             bsp_display_lock(portMAX_DELAY);
-                
-                // 清空卡片并重新创建内容
-                lv_obj_clean(order_card);
-                
-                // 解析并显示订单ID
-                cJSON *id = cJSON_GetObjectItem(root, "_id");
-            lv_obj_t *id_label = lv_label_create(order_card);
-            if (id && cJSON_IsString(id)) {
-                char id_text[64];
-                snprintf(id_text, sizeof(id_text), "订单ID: %s", id->valuestring);
-                lv_label_set_text(id_label, id_text);
-            } else {
-                lv_label_set_text(id_label, "订单ID: 未知");
+            
+            // 清空容器并重新创建内容
+            lv_obj_clean(orders_container);
+            
+            // 解析订单ID
+            cJSON *id = cJSON_GetObjectItem(root, "orderId");
+            if (!id) {
+                id = cJSON_GetObjectItem(root, "_id"); // 兼容旧格式
             }
-            lv_obj_set_style_text_font(id_label, &lv_font_mulan_14, 0);
-            lv_obj_set_style_text_color(id_label, lv_color_hex(0x333333), 0);
-            lv_obj_align(id_label, LV_ALIGN_TOP_MID, 0, 10);
             
-            // 添加分隔线
-            lv_obj_t *line = lv_line_create(order_card);
-            static lv_point_precise_t line_points[] = {{0, 0}, {200, 0}};
-            lv_line_set_points(line, line_points, 2);
-            lv_obj_set_style_line_width(line, 1, 0);
-            lv_obj_set_style_line_color(line, lv_color_hex(0xCCCCCC), 0);
-            lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 50);
+            // 解析菜品内容并构建菜品字符串（优化内存使用）
+            cJSON *items = cJSON_GetObjectItem(root, "items");
+            char *dishes_str = NULL;
+            size_t dishes_len = 0;
+            size_t dishes_capacity = 256;
             
-            // 解析并显示菜品内容
-            cJSON *content = cJSON_GetObjectItem(root, "content");
-            if (content && cJSON_IsArray(content)) {
-                int y_pos = 60;
+            if (items && cJSON_IsArray(items)) {
+                dishes_str = malloc(dishes_capacity);
+                if (!dishes_str) {
+                    ESP_LOGE(TAG, "内存分配失败");
+                    bsp_display_unlock();
+                    cJSON_Delete(root);
+                    return 0;
+                }
+                dishes_str[0] = '\0';
+                
                 cJSON *item = NULL;
-                cJSON_ArrayForEach(item, content) {
+                int item_count = 0;
+                cJSON_ArrayForEach(item, items) {
                     cJSON *name = cJSON_GetObjectItem(item, "name");
                     if (cJSON_IsString(name)) {
-                        lv_obj_t *dish_label = lv_label_create(order_card);
-                        lv_label_set_text(dish_label, name->valuestring);
-                        lv_obj_set_style_text_font(dish_label, &lv_font_mulan_14, 0);
-                        lv_obj_set_style_text_color(dish_label, lv_color_hex(0x666666), 0);
-                        lv_obj_align(dish_label, LV_ALIGN_TOP_LEFT, 10, y_pos);
-                        y_pos += 30;
+                        char *name_str = name->valuestring;
+                        char decoded_name[128] = {0}; // 减小临时缓冲区
+                        int hex_len = strlen(name_str);
+                        
+                        if (hex_len % 2 == 0 && is_valid_hex(name_str)) {
+                            ESP_LOGI(TAG, "检测到十六进制编码的菜品名: %s", name_str);
+                            int decoded_len = hex_to_string(name_str, decoded_name, sizeof(decoded_name));
+                            if (decoded_len > 0) {
+                                ESP_LOGI(TAG, "解码后的菜品名: %s", decoded_name);
+                                name_str = decoded_name;
+                            }
+                        }
+                        
+                        // 动态调整缓冲区大小
+                        size_t needed_len = dishes_len + (item_count > 0 ? 3 : 0) + strlen(name_str) + 1;
+                        if (needed_len > dishes_capacity) {
+                            dishes_capacity = needed_len * 2;
+                            char *new_dishes = realloc(dishes_str, dishes_capacity);
+                            if (!new_dishes) {
+                                ESP_LOGE(TAG, "内存重新分配失败");
+                                free(dishes_str);
+                                bsp_display_unlock();
+                                cJSON_Delete(root);
+                                return 0;
+                            }
+                            dishes_str = new_dishes;
+                        }
+                        
+                        if (item_count > 0) {
+                            strcat(dishes_str, "、");
+                            dishes_len += 3; // 中文字符占3字节
+                        }
+                        strcat(dishes_str, name_str);
+                        dishes_len += strlen(name_str);
+                        item_count++;
                     }
                 }
-            } else {
-                lv_obj_t *no_data = lv_label_create(order_card);
-                lv_label_set_text(no_data, "无菜品数据");
-                lv_obj_set_style_text_font(no_data, &lv_font_mulan_14, 0);
-                lv_obj_align(no_data, LV_ALIGN_TOP_MID, 0, 60);
             }
             
-            // 更新状态显示
-            cJSON *status = cJSON_GetObjectItem(root, "status");
-            if (status && cJSON_IsBool(status)) {
-                lv_obj_t *status_label = lv_label_create(order_card);
-                lv_label_set_text(status_label, status->valueint ? "状态: 已完成" : "状态: 未完成");
-                lv_obj_set_style_text_font(status_label, &lv_font_mulan_14, 0);
-                lv_obj_set_style_text_color(status_label, 
-                    status->valueint ? lv_color_hex(0x4CAF50) : lv_color_hex(0xF44336), 0);
-                lv_obj_align(status_label, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
-                ESP_LOGI(TAG, "订单状态: %s", status->valueint ? "已完成" : "未完成");
+            // 生成订单号（基于订单ID或时间戳）
+            int order_num = 1;
+            if (id && cJSON_IsString(id)) {
+                // 使用订单ID的后几位作为订单号
+                char *id_str = id->valuestring;
+                int len = strlen(id_str);
+                if (len > 4) {
+                    order_num = atoi(id_str + len - 4);
+                } else {
+                    order_num = atoi(id_str);
+                }
+                if (order_num <= 0) order_num = 1;
+            }
+            
+            // 创建动态订单行
+            create_dynamic_order_row(order_num, dishes_str);
+            
+            // 释放动态分配的内存
+            if (dishes_str) {
+                free(dishes_str);
             }
             
             bsp_display_unlock();
