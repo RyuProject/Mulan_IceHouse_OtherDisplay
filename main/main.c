@@ -25,61 +25,21 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include "cJSON.h"
 #include "lv_font_mulan_14.c"
+#include "order_ui.h"
+#include "hex_utils.h"
+#include "utf8_validator.h"
 #include <ctype.h>
 #include <stdlib.h>
 
 static const char *TAG = "NimBLE_BLE_PRPH";
 
-/* 十六进制字符转换为数值 */
-static uint8_t hex_char_to_value(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return 0;
-}
-
-/* 检查字符串是否为有效的十六进制 */
-static bool is_valid_hex(const char *str) {
-    for (int i = 0; str[i]; i++) {
-        if (!isxdigit((unsigned char)str[i])) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/* 十六进制字符串转换为普通字符串 */
-static int hex_to_string(const char *hex, char *output, size_t output_size) {
-    int hex_len = strlen(hex);
-    if (hex_len % 2 != 0 || output_size < hex_len / 2 + 1) {
-        return -1;
-    }
-    
-    int j = 0;
-    for (int i = 0; i < hex_len; i += 2) {
-        uint8_t high = hex_char_to_value(hex[i]);
-        uint8_t low = hex_char_to_value(hex[i + 1]);
-        output[j++] = (high << 4) | low;
-    }
-    output[j] = '\0';
-    return j;
-}
-
 // 定时器回调函数声明
 static void popup_timer_cb(lv_timer_t *timer);
 static void show_popup_message(const char *message, uint32_t duration_ms);
 
-static lv_obj_t *order_card = NULL;
-static lv_obj_t *orders_container = NULL;
 LV_FONT_DECLARE(lv_font_mulan_14);
 
-// 动态订单列表相关函数声明
-static void create_dynamic_order_row(int order_num, const char *dishes);
-static void btn_ready_cb(lv_event_t *e);
+// 订单UI相关函数声明（已模块化到 order_ui.h）
 
 // 定时器回调函数实现
 static void popup_timer_cb(lv_timer_t *timer) {
@@ -116,94 +76,14 @@ static void show_popup_message(const char *message, uint32_t duration_ms)
     lv_timer_set_repeat_count(timer, 1);
 }
 
-// 按钮点击事件：已出餐 → 修改按钮状态、文字、颜色
-static void btn_ready_cb(lv_event_t *e)
-{
-    lv_obj_t *btn = lv_event_get_target(e);
-
-    // 修改按钮文字为 "✅ 已出餐"
-    lv_obj_t *label = lv_obj_get_child(btn, 0);  // 获取按钮内的 label
-    if (label) {
-        lv_label_set_text(label, "✅ 已出餐");
-    }
-
-    // 修改按钮背景色为灰色
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0xCCCCCC), 0);
-
-    // 禁用按钮交互（变灰且不可点击）
-    lv_obj_clear_state(btn, LV_STATE_DEFAULT);          // 清除默认可点击状态
-    lv_obj_add_state(btn, LV_STATE_DISABLED);           // 或直接禁用
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);      // 确保不可点击
-
-    ESP_LOGI(TAG, "✅ 已出餐按钮被点击并已禁用");
-}
-
-// 创建订单行（动态添加到 UI）
-static void create_dynamic_order_row(int order_num, const char *dishes) {
-    lv_obj_t *row = lv_obj_create(orders_container);
-    lv_obj_set_size(row, LV_PCT(100), 80);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_SPACE_BETWEEN);
-    lv_obj_set_style_pad_all(row, 10, 0);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-    // 将新订单行移动到容器顶部
-    lv_obj_move_to_index(row, 0);
-
-    // 左侧：订单信息（垂直）
-    lv_obj_t *left_container = lv_obj_create(row);
-    lv_obj_set_flex_flow(left_container, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(left_container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_width(left_container, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(left_container, 5, 0);
-
-    // lv_obj_t *order_label = lv_label_create(left_container);
-    // lv_label_set_text_fmt(order_label, "第 %d 单", order_num);
-    // lv_obj_set_style_text_font(order_label, &lv_font_mulan_14, 0);
-    // lv_obj_align(order_label, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    lv_obj_t *dish_label = lv_label_create(left_container);
-    lv_label_set_text_fmt(dish_label, "%s", dishes);
-    lv_obj_set_style_text_font(dish_label, &lv_font_mulan_14, 0);
-    lv_obj_align(dish_label, LV_ALIGN_TOP_LEFT, 0, 25);
-
-    // 右侧：已出餐按钮
-    lv_obj_t *btn_ready = lv_btn_create(row);
-    lv_obj_set_size(btn_ready, 80, 30);
-    lv_obj_align(btn_ready, LV_ALIGN_TOP_RIGHT, -5, 5);
-    lv_obj_set_style_bg_color(btn_ready, lv_color_hex(0x007AFF), 0);  // 初始为蓝色
-    lv_obj_set_style_radius(btn_ready, 4, 0);
-    lv_obj_clear_flag(btn_ready, LV_OBJ_FLAG_SCROLLABLE);
-
-    // 按钮文字
-    lv_obj_t *btn_label = lv_label_create(btn_ready);
-    lv_label_set_text(btn_label, "已出餐");
-    lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
-    lv_obj_center(btn_label);
-
-    // 添加点击事件
-    lv_obj_add_event_cb(btn_ready, btn_ready_cb, LV_EVENT_CLICKED, NULL);
-}
-
-// 初始化订单列表 UI
+// 初始化订单列表 UI（使用模块化接口）
 static void create_order_ui(void)
 {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0xf5f5f5), 0);
 
-    // 创建订单容器
-    orders_container = lv_obj_create(scr);
-    lv_obj_set_size(orders_container, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_flex_flow(orders_container, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(orders_container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_scrollbar_mode(orders_container, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_style_pad_all(orders_container, 10, 0);
-
-    // 初始显示等待数据
-    lv_obj_t *waiting_label = lv_label_create(orders_container);
-    lv_obj_set_style_text_font(waiting_label, &lv_font_mulan_14, 0);
-    lv_label_set_text(waiting_label, "等待订单数据...");
-    lv_obj_center(waiting_label);
+    // 使用模块化的订单UI初始化
+    order_ui_init(scr);
 }
 
 /* 蓝牙相关变量和函数声明 */
@@ -266,40 +146,7 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         }
         
         // 检查数据是否为有效的UTF-8编码
-        bool is_valid_utf8 = true;
-        for (int i = 0; i < out_len; i++) {
-            uint8_t c = buf[i];
-            if (c > 0x7F) { // 非ASCII字符
-                // 检查UTF-8编码有效性
-                if ((c & 0xE0) == 0xC0) { // 2字节UTF-8
-                    if (i + 1 >= out_len || (buf[i+1] & 0xC0) != 0x80) {
-                        is_valid_utf8 = false;
-                        break;
-                    }
-                    i++; // 跳过下一个字节
-                } else if ((c & 0xF0) == 0xE0) { // 3字节UTF-8
-                    if (i + 2 >= out_len || 
-                        (buf[i+1] & 0xC0) != 0x80 ||
-                        (buf[i+2] & 0xC0) != 0x80) {
-                        is_valid_utf8 = false;
-                        break;
-                    }
-                    i += 2; // 跳过两个字节
-                } else if ((c & 0xF8) == 0xF0) { // 4字节UTF-8
-                    if (i + 3 >= out_len || 
-                        (buf[i+1] & 0xC0) != 0x80 ||
-                        (buf[i+2] & 0xC0) != 0x80 ||
-                        (buf[i+3] & 0xC0) != 0x80) {
-                        is_valid_utf8 = false;
-                        break;
-                    }
-                    i += 3; // 跳过三个字节
-                } else {
-                    is_valid_utf8 = false;
-                    break;
-                }
-            }
-        }
+        bool is_valid_utf8 = utf8_is_valid(buf, out_len);
         
         if (!is_valid_utf8) {
             ESP_LOGW(TAG, "Data encoding issue: Not valid UTF-8");
@@ -343,12 +190,12 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                             
                             // 检查是否为有效的十六进制字符串
                             int hex_len = strlen(hex_content);
-                            if (hex_len % 2 == 0 && is_valid_hex(hex_content)) {
+                            if (hex_len % 2 == 0 && hex_is_valid(hex_content)) {
                                 ESP_LOGI(TAG, "Hex content detected: %s", hex_content);
                                 
                                 // 解码十六进制
                                 char decoded_content[256] = {0};
-                                int decoded_len = hex_to_string(hex_content, decoded_content, sizeof(decoded_content));
+                                int decoded_len = hex_to_ascii(hex_content, decoded_content, sizeof(decoded_content));
                                 
                                 if (decoded_len > 0) {
                                     ESP_LOGW(TAG, "Decoded content: %s", decoded_content);
@@ -407,11 +254,11 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 char decoded_content[256] = {0};
                 int decoded_len = 0;
                 int hex_len = strlen(content_str);
-                if (hex_len % 2 == 0 && is_valid_hex(content_str)) {
+                if (hex_len % 2 == 0 && hex_is_valid(content_str)) {
                     ESP_LOGI(TAG, "检测到十六进制编码内容: %s", content_str);
                     
                     // 解码十六进制
-                    decoded_len = hex_to_string(content_str, decoded_content, sizeof(decoded_content));
+                    decoded_len = hex_to_ascii(content_str, decoded_content, sizeof(decoded_content));
                     
                     if (decoded_len > 0) {
                         ESP_LOGI(TAG, "解码后的内容: %s", decoded_content);
@@ -493,9 +340,9 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                         char decoded_name[128] = {0}; // 减小临时缓冲区
                         int hex_len = strlen(name_str);
                         
-                        if (hex_len % 2 == 0 && is_valid_hex(name_str)) {
+                        if (hex_len % 2 == 0 && hex_is_valid(name_str)) {
                             ESP_LOGI(TAG, "检测到十六进制编码的菜品名: %s", name_str);
-                            int decoded_len = hex_to_string(name_str, decoded_name, sizeof(decoded_name));
+                            int decoded_len = hex_to_ascii(name_str, decoded_name, sizeof(decoded_name));
                             if (decoded_len > 0) {
                                 ESP_LOGI(TAG, "解码后的菜品名: %s", decoded_name);
                                 name_str = decoded_name;
@@ -542,7 +389,7 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 if (order_num <= 0) order_num = 1;
             }
             
-            // 创建动态订单行
+            // 创建动态订单行（使用模块化接口）
             create_dynamic_order_row(order_num, dishes_str);
             
             // 释放动态分配的内存
