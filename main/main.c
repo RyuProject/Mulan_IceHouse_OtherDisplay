@@ -1,20 +1,10 @@
 
-/*
- * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
- */
 #include "nvs_flash.h"
-#include "nvs.h"
 #include "esp_log.h"
 #include "esp_err.h"
-#include "esp_check.h"
-#include "esp_memory_utils.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
-#include "bsp_board_extra.h"
-#include "lv_demos.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -28,65 +18,19 @@
 #include "order_ui.h"
 #include "hex_utils.h"
 #include "utf8_validator.h"
-#include <ctype.h>
 #include <stdlib.h>
 
 static const char *TAG = "NimBLE_BLE_PRPH";
 
-// 定时器回调函数声明
-static void popup_timer_cb(lv_timer_t *timer);
-static void show_popup_message(const char *message, uint32_t duration_ms);
-
 LV_FONT_DECLARE(lv_font_mulan_14);
 
-// 订单UI相关函数声明（已模块化到 order_ui.h）
-
-// 定时器回调函数实现
-static void popup_timer_cb(lv_timer_t *timer) {
-    lv_obj_t *popup = (lv_obj_t *)lv_timer_get_user_data(timer);
-    lv_obj_del(popup);
-    lv_timer_del(timer);
-}
-
-static void show_popup_message(const char *message, uint32_t duration_ms)
-{
-    bsp_display_lock(0);
-    
-    // 创建弹出窗口
-    lv_obj_t *popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(popup, 300, 100);
-    lv_obj_center(popup);
-    lv_obj_set_style_bg_color(popup, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(popup, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(popup, 2, 0);
-    lv_obj_set_style_border_color(popup, lv_color_white(), 0);
-    lv_obj_set_style_radius(popup, 10, 0);
-    
-    // 创建消息标签
-    lv_obj_t *label = lv_label_create(popup);
-    lv_label_set_text(label, message);
-    lv_obj_set_style_text_font(label, &lv_font_mulan_14, 0);
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_obj_center(label);
-    
-    bsp_display_unlock();
-    
-    // 设置定时器自动关闭弹出窗口
-    lv_timer_t *timer = lv_timer_create(popup_timer_cb, duration_ms, popup);
-    lv_timer_set_repeat_count(timer, 1);
-}
-
-// 初始化订单列表 UI（使用模块化接口）
 static void create_order_ui(void)
 {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0xf5f5f5), 0);
-
-    // 使用模块化的订单UI初始化
     order_ui_init(scr);
 }
 
-/* 蓝牙相关变量和函数声明 */
 static ble_uuid16_t gatt_svc_uuid = BLE_UUID16_INIT(0xABCD);
 static ble_uuid16_t gatt_chr_uuid = BLE_UUID16_INIT(0x1234);
 
@@ -98,7 +42,6 @@ static void bleprph_host_task(void *param);
 static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg);
 
-/* 自定义 GATT 服务定义 */
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -116,13 +59,12 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
     {0}
 };
 
-/* 蓝牙特征访问回调 */
 static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     switch (ctxt->op) {
     case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-        uint8_t buf[1024];  // 增加缓冲区大小
+        uint8_t buf[512];
         uint16_t out_len = 0;
         int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len);
         if (rc != 0) {
@@ -130,55 +72,12 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             return BLE_ATT_ERR_UNLIKELY;
         }
         
-        if (out_len < sizeof(buf)) {
-            buf[out_len] = '\0';
-        } else {
-            buf[sizeof(buf) - 1] = '\0';
-            out_len = sizeof(buf) - 1;
-        }
-        
-        ESP_LOGI(TAG, "Received data length: %d bytes", out_len);
-        
-        // 检查是否数据完整（应该以}结尾）
-        if (out_len > 0 && buf[out_len - 1] != '}') {
-            ESP_LOGW(TAG, "Data appears to be truncated! Last byte: 0x%02X", buf[out_len - 1]);
-            ESP_LOGW(TAG, "This might be a fragmented BLE packet. Ensure complete JSON is sent in one packet.");
-        }
-        
-        // 检查数据是否为有效的UTF-8编码
-        bool is_valid_utf8 = utf8_is_valid(buf, out_len);
-        
-        if (!is_valid_utf8) {
-            ESP_LOGW(TAG, "Data encoding issue: Not valid UTF-8");
-            ESP_LOGW(TAG, "This might be due to encoding mismatch between sender and receiver");
-        }
-        
-        ESP_LOGI(TAG, "Received data: %.*s", out_len, (char *)buf);
-        // 调试：打印原始字节数据
-        ESP_LOGI(TAG, "Raw bytes (first 50 bytes):");        
-        // 检查BLE MTU大小
-        // uint16_t mtu = ble_att_mtu(conn_handle);
-        
-        // 如果数据长度异常，提供调试建议
-        if (out_len < 20 || out_len > 256) {
-            ESP_LOGW(TAG, "Unexpected data length. Check if data is properly formatted JSON");
-            ESP_LOGW(TAG, "Expected format: {\"type\":\"info\",\"content\":\"小程序已连接\"}");
-        }
+        if (out_len < sizeof(buf)) buf[out_len] = '\0';
+        else buf[sizeof(buf) - 1] = '\0';
         
         cJSON *root = cJSON_Parse((char *)buf);
         if (!root) {
-            ESP_LOGW(TAG, "JSON parse failed");
-            // 调试：打印解析失败的具体原因
-            const char *error_ptr = cJSON_GetErrorPtr();
-            if (error_ptr != NULL) {
-                ESP_LOGE(TAG, "JSON parse error before: %s", error_ptr);
-            }
-            
-            // 检查是否为十六进制编码的数据（小程序发送的格式）
             if (strstr((char *)buf, "content") && strstr((char *)buf, "\"") && (strstr((char *)buf, "type") || strstr((char *)buf, "_id"))) {
-                ESP_LOGI(TAG, "Detected possible hex-encoded content from mini program");
-                
-                // 尝试提取十六进制内容并解码
                 char *content_start = strstr((char *)buf, "content");
                 if (content_start) {
                     char *quote_start = strchr(content_start, '"');
@@ -268,36 +167,8 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                     }
                 }
                 
-                // 加锁保护UI更新
-                bsp_display_lock(portMAX_DELAY);
-                
-                // 创建弹出式窗口
-                lv_obj_t *popup = lv_obj_create(lv_scr_act());
-                lv_obj_set_size(popup, 280, 120);
-                lv_obj_align(popup, LV_ALIGN_CENTER, 0, 0);
-                lv_obj_set_style_bg_color(popup, lv_color_hex(0xFFFFFF), 0);
-                lv_obj_set_style_border_width(popup, 2, 0);
-                lv_obj_set_style_border_color(popup, lv_color_hex(0x4CAF50), 0);
-                lv_obj_set_style_radius(popup, 10, 0);
-                lv_obj_set_style_pad_all(popup, 20, 0);
-                
-                // 创建消息文本
-                lv_obj_t *msg_label = lv_label_create(popup);
-                lv_obj_set_style_text_font(msg_label, &lv_font_mulan_14, 0);
-                // 使用解码后的内容（如果有），否则使用原始内容
-                if (decoded_len > 0) {
-                    lv_label_set_text(msg_label, decoded_content);
-                } else {
-                    lv_label_set_text(msg_label, content_str);
-                }
-                lv_obj_set_style_text_color(msg_label, lv_color_hex(0x333333), 0);
-                lv_obj_align(msg_label, LV_ALIGN_CENTER, 0, 0);
-                
-                // 3秒后自动关闭窗口
-                lv_timer_t *timer = lv_timer_create(popup_timer_cb, 3000, popup);
-                lv_timer_set_repeat_count(timer, 1);
-                
-                bsp_display_unlock();
+                // 使用模块化的弹窗函数（黑色背景，3秒后自动消失）
+                show_popup_message(decoded_len > 0 ? decoded_content : content_str, 3000);
             }
         }
 
@@ -305,9 +176,6 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             // 处理订单数据
             // 加锁保护UI更新
             bsp_display_lock(portMAX_DELAY);
-            
-            // 不清空容器，新订单将添加到顶部
-            // lv_obj_clean(orders_container); // 注释掉清空容器的代码
             
             // 解析订单ID
             cJSON *id = cJSON_GetObjectItem(root, "orderId");
@@ -566,10 +434,8 @@ void app_main(void)
         return;
     }
 
-    // 启动蓝牙主机任务
     nimble_port_freertos_init(bleprph_host_task);
 
-    // 初始化显示
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
         .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
@@ -584,11 +450,6 @@ void app_main(void)
     bsp_display_backlight_on();
 
     bsp_display_lock(0);
-
-    // lv_demo_music();
-    // lv_demo_benchmark();
-    // lv_demo_widgets();
-    create_order_ui();
-
+    order_ui_init(lv_scr_act());
     bsp_display_unlock();
 }
