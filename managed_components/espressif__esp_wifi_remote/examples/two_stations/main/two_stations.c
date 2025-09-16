@@ -20,16 +20,8 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_wifi_remote.h"
-
-/* The examples use WiFi configuration that you can set via project configuration menu
-
-   If you'd rather not, just change the below entries to strings with
-   the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
-*/
-#define EXAMPLE_ESP_MAXIMUM_RETRY  CONFIG_ESP_MAXIMUM_RETRY
-
-/* FreeRTOS event group to signal when we are connected*/
-static EventGroupHandle_t s_wifi_event_group;
+#include "console_ping.h"
+#include "iperf_cmd.h"
 
 /* The event group allows multiple bits for each event, but we only care about two events:
  * - we are connected to the AP with an IP
@@ -40,12 +32,13 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_REMOTE_CONNECTED_BIT BIT2
 #define WIFI_REMOTE_FAIL_BIT      BIT3
 #define WIFI_REMOTE_BITS (WIFI_REMOTE_CONNECTED_BIT | WIFI_REMOTE_FAIL_BIT)
-
-static const char *TAG_local = "two_stations_local";
-static const char *TAG_remote = "two_stations_remote";
+#define EXAMPLE_ESP_MAXIMUM_RETRY  CONFIG_ESP_MAXIMUM_RETRY
 
 static int s_retry_num = 0;
+static EventGroupHandle_t s_wifi_event_group;
 
+#if CONFIG_ESP_WIFI_LOCAL_ENABLE
+static const char *TAG_local = "two_stations_local";
 
 static void event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -72,6 +65,10 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
+#endif
+
+#if CONFIG_ESP_WIFI_REMOTE_ENABLE
+static const char *TAG_remote = "two_stations_remote";
 
 static void event_handler_remote(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -94,6 +91,7 @@ static void event_handler_remote(void* arg, esp_event_base_t event_base,
         xEventGroupSetBits(s_wifi_event_group, WIFI_REMOTE_CONNECTED_BIT);
     }
 }
+#endif
 
 static void init_system_components(void)
 {
@@ -102,6 +100,7 @@ static void init_system_components(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 }
 
+#if CONFIG_ESP_WIFI_LOCAL_ENABLE
 static void wifi_init_sta(void)
 {
     esp_netif_create_default_wifi_sta();
@@ -136,9 +135,13 @@ static void wifi_init_sta(void)
         ESP_LOGE(TAG_local, "UNEXPECTED EVENT");
     }
 }
+#endif
 
+#if CONFIG_ESP_WIFI_REMOTE_ENABLE
 static void wifi_init_remote_sta(void)
 {
+    esp_wifi_remote_create_default_sta();
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_remote_init(&cfg));
 
@@ -168,10 +171,11 @@ static void wifi_init_remote_sta(void)
         ESP_LOGE(TAG_remote, "UNEXPECTED EVENT");
     }
 }
+#endif
 
 void app_main(void)
 {
-    //Initialize NVS
+    esp_log_level_set("*", ESP_LOG_INFO);
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());
@@ -180,6 +184,21 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     init_system_components();
+
+#if CONFIG_ESP_WIFI_LOCAL_ENABLE
     wifi_init_sta();
+#endif
+
+#if CONFIG_ESP_WIFI_REMOTE_ENABLE
     wifi_init_remote_sta();
+#endif
+
+    // at this point, we should be connected (via at least one station)
+    ESP_ERROR_CHECK(console_cmd_init());
+    // now let's register ping and iperf utilities to the console
+    app_register_iperf_commands();
+
+    ESP_ERROR_CHECK(console_cmd_ping_register());
+    ESP_ERROR_CHECK(console_cmd_start());
+
 }

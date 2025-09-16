@@ -75,6 +75,9 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         if (out_len < sizeof(buf)) buf[out_len] = '\0';
         else buf[sizeof(buf) - 1] = '\0';
         
+        // 打印收到的原始JSON信息
+        ESP_LOGI(TAG, "收到蓝牙JSON信息: %s", (char *)buf);
+        
         cJSON *root = cJSON_Parse((char *)buf);
         if (!root) {
             if (strstr((char *)buf, "content") && strstr((char *)buf, "\"") && (strstr((char *)buf, "type") || strstr((char *)buf, "_id"))) {
@@ -121,24 +124,21 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         }
 
         bool is_message = false;
-        bool is_order = false;
+        bool is_add_order = false;
+        bool is_update_order = false;
+        bool is_remove_order = false;
         
-        // 检查是否为消息类型(type == "info")
+        // 检查操作类型
         cJSON *type = cJSON_GetObjectItem(root, "type");
         if (type && cJSON_IsString(type)) {
             if (strcmp(type->valuestring, "info") == 0) {
                 is_message = true;
-            } else if (strcmp(type->valuestring, "order") == 0) {
-                is_order = true;
-                // 兼容两种格式：有command字段和没有command字段的订单
-                cJSON *command = cJSON_GetObjectItem(root, "command");
-                if (command && cJSON_IsString(command)) {
-                    // 如果有command字段，检查是否为display_order
-                    if (strcmp(command->valuestring, "display_order") != 0) {
-                        is_order = false; // 不是要显示的订单
-                    }
-                }
-                // 如果没有command字段，默认认为是显示订单
+            } else if (strcmp(type->valuestring, "add") == 0) {
+                is_add_order = true;
+            } else if (strcmp(type->valuestring, "update") == 0) {
+                is_update_order = true;
+            } else if (strcmp(type->valuestring, "remove") == 0) {
+                is_remove_order = true;
             }
         }
         
@@ -172,82 +172,93 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             }
         }
 
-        if (is_order) {
-            // 处理订单数据
+        // 处理订单操作
+        if (is_add_order || is_update_order || is_remove_order) {
             // 加锁保护UI更新
             bsp_display_lock(portMAX_DELAY);
             
             // 解析订单ID
             cJSON *id = cJSON_GetObjectItem(root, "orderId");
-            if (!id) {
-                id = cJSON_GetObjectItem(root, "_id"); // 兼容旧格式
+            if (!id || !cJSON_IsString(id)) {
+                ESP_LOGE(TAG, "无效的订单ID");
+                bsp_display_unlock();
+                cJSON_Delete(root);
+                return 0;
             }
             
-            // 解析菜品内容并构建菜品字符串（优化内存使用）
-            cJSON *items = cJSON_GetObjectItem(root, "items");
-            char *dishes_str = NULL;
-            size_t dishes_len = 0;
-            size_t dishes_capacity = 256;
+            char *order_id = id->valuestring;
+            ESP_LOGI(TAG, "处理订单操作: type=%s, orderId=%s", 
+                    is_add_order ? "add" : (is_update_order ? "update" : "remove"), order_id);
             
-            if (items && cJSON_IsArray(items)) {
-                dishes_str = malloc(dishes_capacity);
-                if (!dishes_str) {
-                    ESP_LOGE(TAG, "内存分配失败");
-                    bsp_display_unlock();
-                    cJSON_Delete(root);
-                    return 0;
-                }
-                dishes_str[0] = '\0';
+            if (is_remove_order) {
+                // 删除订单
+                ESP_LOGI(TAG, "删除订单: %s", order_id);
+                remove_order_by_id(order_id);
+                show_popup_message("订单已删除", 2000);
+            } else {
+                // 解析菜品内容并构建菜品字符串
+                cJSON *items = cJSON_GetObjectItem(root, "items");
+                char *dishes_str = NULL;
+                size_t dishes_len = 0;
+                size_t dishes_capacity = 256;
                 
-                cJSON *item = NULL;
-                int item_count = 0;
-                cJSON_ArrayForEach(item, items) {
-                    cJSON *name = cJSON_GetObjectItem(item, "name");
-                    if (cJSON_IsString(name)) {
-                        char *name_str = name->valuestring;
-                        char decoded_name[128] = {0}; // 减小临时缓冲区
-                        int hex_len = strlen(name_str);
-                        
-                        if (hex_len % 2 == 0 && hex_is_valid(name_str)) {
-                            ESP_LOGI(TAG, "检测到十六进制编码的菜品名: %s", name_str);
-                            int decoded_len = hex_to_ascii(name_str, decoded_name, sizeof(decoded_name));
-                            if (decoded_len > 0) {
-                                ESP_LOGI(TAG, "解码后的菜品名: %s", decoded_name);
-                                name_str = decoded_name;
+                if (items && cJSON_IsArray(items)) {
+                    dishes_str = malloc(dishes_capacity);
+                    if (!dishes_str) {
+                        ESP_LOGE(TAG, "内存分配失败");
+                        bsp_display_unlock();
+                        cJSON_Delete(root);
+                        return 0;
+                    }
+                    dishes_str[0] = '\0';
+                    
+                    cJSON *item = NULL;
+                    int item_count = 0;
+                    cJSON_ArrayForEach(item, items) {
+                        cJSON *name = cJSON_GetObjectItem(item, "name");
+                        if (cJSON_IsString(name)) {
+                            char *name_str = name->valuestring;
+                            char decoded_name[128] = {0};
+                            int hex_len = strlen(name_str);
+                            
+                            if (hex_len % 2 == 0 && hex_is_valid(name_str)) {
+                                ESP_LOGI(TAG, "检测到十六进制编码的菜品名: %s", name_str);
+                                int decoded_len = hex_to_ascii(name_str, decoded_name, sizeof(decoded_name));
+                                if (decoded_len > 0) {
+                                    ESP_LOGI(TAG, "解码后的菜品名: %s", decoded_name);
+                                    name_str = decoded_name;
+                                }
                             }
-                        }
-                        
-                        // 动态调整缓冲区大小
-                        size_t needed_len = dishes_len + (item_count > 0 ? 3 : 0) + strlen(name_str) + 1;
-                        if (needed_len > dishes_capacity) {
-                            dishes_capacity = needed_len * 2;
-                            char *new_dishes = realloc(dishes_str, dishes_capacity);
-                            if (!new_dishes) {
-                                ESP_LOGE(TAG, "内存重新分配失败");
-                                free(dishes_str);
-                                bsp_display_unlock();
-                                cJSON_Delete(root);
-                                return 0;
+                            
+                            // 动态调整缓冲区大小
+                            size_t needed_len = dishes_len + (item_count > 0 ? 3 : 0) + strlen(name_str) + 1;
+                            if (needed_len > dishes_capacity) {
+                                dishes_capacity = needed_len * 2;
+                                char *new_dishes = realloc(dishes_str, dishes_capacity);
+                                if (!new_dishes) {
+                                    ESP_LOGE(TAG, "内存重新分配失败");
+                                    free(dishes_str);
+                                    bsp_display_unlock();
+                                    cJSON_Delete(root);
+                                    return 0;
+                                }
+                                dishes_str = new_dishes;
                             }
-                            dishes_str = new_dishes;
+                            
+                            if (item_count > 0) {
+                                strcat(dishes_str, "、");
+                                dishes_len += 3;
+                            }
+                            strcat(dishes_str, name_str);
+                            dishes_len += strlen(name_str);
+                            item_count++;
                         }
-                        
-                        if (item_count > 0) {
-                            strcat(dishes_str, "、");
-                            dishes_len += 3; // 中文字符占3字节
-                        }
-                        strcat(dishes_str, name_str);
-                        dishes_len += strlen(name_str);
-                        item_count++;
                     }
                 }
-            }
-            
-            // 生成订单号（基于订单ID或时间戳）
-            int order_num = 1;
-            if (id && cJSON_IsString(id)) {
-                // 使用订单ID的后几位作为订单号
-                char *id_str = id->valuestring;
+                
+                // 生成订单号（基于订单ID）
+                int order_num = 1;
+                char *id_str = order_id;
                 int len = strlen(id_str);
                 if (len > 4) {
                     order_num = atoi(id_str + len - 4);
@@ -255,14 +266,23 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                     order_num = atoi(id_str);
                 }
                 if (order_num <= 0) order_num = 1;
-            }
-            
-            // 创建动态订单行（使用模块化接口）
-            create_dynamic_order_row(order_num, dishes_str);
-            
-            // 释放动态分配的内存
-            if (dishes_str) {
-                free(dishes_str);
+                
+                if (is_add_order) {
+                    // 添加订单
+                    ESP_LOGI(TAG, "添加订单: %s", order_id);
+                    create_dynamic_order_row_with_id(order_id, order_num, dishes_str ? dishes_str : "无菜品");
+                    show_popup_message("订单已添加", 2000);
+                } else if (is_update_order) {
+                    // 更新订单
+                    ESP_LOGI(TAG, "更新订单: %s", order_id);
+                    update_order_by_id(order_id, order_num, dishes_str ? dishes_str : "无菜品");
+                    show_popup_message("订单已更新", 2000);
+                }
+                
+                // 释放动态分配的内存
+                if (dishes_str) {
+                    free(dishes_str);
+                }
             }
             
             bsp_display_unlock();

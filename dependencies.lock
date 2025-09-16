@@ -36,13 +36,13 @@ dependencies:
   esp_cam_sensor:
     dependencies: []
     source:
-      path: /Users/zhangwenyu/Desktop/Mulan_Order/common_components/esp_cam_sensor
+      path: /Users/zhangwenyu/Desktop/Mulan_IceHouse_OtherDisplay/common_components/esp_cam_sensor
       type: local
     version: 0.9.0
   esp_lcd_jd9365:
     dependencies: []
     source:
-      path: /Users/zhangwenyu/Desktop/Mulan_Order/common_components/esp_lcd_jd9365
+      path: /Users/zhangwenyu/Desktop/Mulan_IceHouse_OtherDisplay/common_components/esp_lcd_jd9365
       type: local
     version: 1.0.2
   esp_lcd_touch_gsl3680:
@@ -51,13 +51,13 @@ dependencies:
       public: true
       version: ^1.1.0
     source:
-      path: /Users/zhangwenyu/Desktop/Mulan_Order/common_components/esp_lcd_touch_gsl3680
+      path: /Users/zhangwenyu/Desktop/Mulan_IceHouse_OtherDisplay/common_components/esp_lcd_touch_gsl3680
       type: local
     version: '*'
   esp_video:
     dependencies: []
     source:
-      path: /Users/zhangwenyu/Desktop/Mulan_Order/common_components/esp_video
+      path: /Users/zhangwenyu/Desktop/Mulan_IceHouse_OtherDisplay/common_components/esp_video
       type: local
     version: 0.8.0~3
   espressif/cmake_utilities:
@@ -71,7 +71,7 @@ dependencies:
       type: service
     version: 0.5.3
   espressif/eppp_link:
-    component_hash: 587abf150563ee0efeeba88e3c7cf46675ab5bd752a788f4b9c88a54649221dd
+    component_hash: bac8be8aa2aa5b15d5a0dbbf0b44a74a20a63ad09b475d114cbcb42c722913db
     dependencies:
     - name: espressif/esp_serial_slave_link
       registry_url: https://components.espressif.com
@@ -83,7 +83,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.1.0
+    version: 1.1.1
   espressif/esp32_p4_function_ev_board:
     dependencies:
     - name: espressif/esp_codec_dev
@@ -107,7 +107,7 @@ dependencies:
     - name: lvgl/lvgl
       version: '>=8,<10'
     source:
-      path: /Users/zhangwenyu/Desktop/Mulan_Order/common_components/esp32_p4_function_ev_board
+      path: /Users/zhangwenyu/Desktop/Mulan_IceHouse_OtherDisplay/common_components/esp32_p4_function_ev_board
       type: local
     targets:
     - esp32p4
@@ -136,7 +136,7 @@ dependencies:
     - esp32p4
     version: 1.1.3
   espressif/esp_hosted:
-    component_hash: 22b4d101d7757ae67826f9f6be19efcdad66a95071271e6559a705964652883c
+    component_hash: 0fc6aa75ec6061e1d48b3abc5f3987c5a84a3fda60811c3b1ad7f536250bf58b
     dependencies:
     - name: idf
       require: private
@@ -144,7 +144,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.3.2
+    version: 2.4.1
   espressif/esp_ipa:
     component_hash: 7547b050a99351a85aaba8ba38211c36fd4769c2ae3e570fa330dc90dfd2704c
     dependencies:
@@ -192,7 +192,7 @@ dependencies:
   espressif/esp_lcd_jd9165:
     dependencies: []
     source:
-      path: /Users/zhangwenyu/Desktop/Mulan_Order/common_components/espressif__esp_lcd_jd9165
+      path: /Users/zhangwenyu/Desktop/Mulan_IceHouse_OtherDisplay/common_components/espressif__esp_lcd_jd9165
       type: local
     version: 1.0.2
   espressif/esp_lcd_touch:
@@ -254,7 +254,7 @@ dependencies:
       type: service
     version: 1.1.0~1
   espressif/esp_wifi_remote:
-    component_hash: 106afa5fff41463040ced78ab44c218f591e0c8eaf80172a02b539f3b5008071
+    component_hash: 0121d2fd6f41fc01d6c0c1ab7a4f04414da07c8981cbd6a1a9eb3cda199507a3
     dependencies:
     - name: espressif/esp_hosted
       registry_url: https://components.espressif.com
@@ -272,9 +272,9 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 0.16.1
+    version: 1.0.0
   espressif/wifi_remote_over_eppp:
-    component_hash: 3768ca9b0409cd963a72920336febac7bb7d14c2ccd73e9ddd3925ceaa3b9f15
+    component_hash: 7afc4161e7746618c52285e8103393c7fab7b3d88e18653e5ccf723f2012f9c2
     dependencies:
     - name: espressif/eppp_link
       registry_url: https://components.espressif.com
@@ -286,7 +286,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.1.4
+    version: 0.2.0
   hfudev/json:
     component_hash: 1d5a0b0c751cb21059d04052e4a215cfe0f1468abf950a812119f568b722b945
     dependencies: []

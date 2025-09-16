@@ -9,6 +9,9 @@ void order_ui_init(lv_obj_t *parent);
 // 创建动态订单行
 void create_dynamic_order_row(int order_num, const char *dishes);
 
+// 创建带订单ID的动态订单行
+void create_dynamic_order_row_with_id(const char *order_id, int order_num, const char *dishes);
+
 /**
  * @brief 显示弹出消息
  * 
@@ -16,5 +19,21 @@ void create_dynamic_order_row(int order_num, const char *dishes);
  * @param duration_ms 显示持续时间(毫秒)
  */
 void show_popup_message(const char *message, uint32_t duration_ms);
+
+/**
+ * @brief 根据订单ID删除订单
+ * 
+ * @param order_id 订单ID字符串
+ */
+void remove_order_by_id(const char *order_id);
+
+/**
+ * @brief 根据订单ID更新订单
+ * 
+ * @param order_id 订单ID字符串
+ * @param order_num 订单号
+ * @param dishes 菜品内容
+ */
+void update_order_by_id(const char *order_id, int order_num, const char *dishes);
 
 #endif // ORDER_UI_H
