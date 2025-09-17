@@ -36,4 +36,12 @@ void remove_order_by_id(const char *order_id);
  */
 void update_order_by_id(const char *order_id, int order_num, const char *dishes);
 
+/**
+ * @brief 发送蓝牙通知
+ * 
+ * @param json_str JSON格式的字符串
+ * @return int 成功返回0，失败返回-1
+ */
+int send_notification(const char *json_str);
+
 #endif // ORDER_UI_H

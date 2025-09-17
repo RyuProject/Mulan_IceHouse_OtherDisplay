@@ -33,12 +33,36 @@ static void create_order_ui(void)
 
 static ble_uuid16_t gatt_svc_uuid = BLE_UUID16_INIT(0xABCD);
 static ble_uuid16_t gatt_chr_uuid = BLE_UUID16_INIT(0x1234);
+static ble_uuid16_t gatt_notify_uuid = BLE_UUID16_INIT(0x5678);
+static uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t g_notify_handle = 0;
 
 static int bleprph_gap_event(struct ble_gap_event *event, void *arg);
 static void bleprph_advertise(void);
 static void bleprph_on_sync(void);
 static void bleprph_on_reset(int reason);
 static void bleprph_host_task(void *param);
+int send_notification(const char *json_str)
+{
+    if (g_conn_handle == BLE_HS_CONN_HANDLE_NONE || g_notify_handle == 0) {
+        return -1;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(json_str, strlen(json_str));
+    if (!om) {
+        return -1;
+    }
+
+    int rc = ble_gattc_notify_custom(g_conn_handle, g_notify_handle, om);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to send notification: %d", rc);
+        os_mbuf_free_chain(om);
+        return rc;
+    }
+
+    return 0;
+}
+
 static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg);
 
@@ -52,6 +76,12 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .access_cb = bleprph_chr_access,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_READ,
                 .val_handle = 0,
+            },
+            {
+                .uuid = (ble_uuid_t *)&gatt_notify_uuid,
+                .access_cb = bleprph_chr_access,
+                .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ,
+                .val_handle = &g_notify_handle,
             },
             {0}
         },
@@ -307,6 +337,7 @@ static int bleprph_gap_event(struct ble_gap_event *event, void *arg)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
+            g_conn_handle = event->connect.conn_handle;
             ESP_LOGI(TAG, "Connected, handle=%d", event->connect.conn_handle);
         } else {
             ESP_LOGI(TAG, "Connect failed; status=%d", event->connect.status);
@@ -315,6 +346,7 @@ static int bleprph_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
+        g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         ESP_LOGI(TAG, "Disconnected; reason=%d", event->disconnect.reason);
         bleprph_advertise();
         return 0;
