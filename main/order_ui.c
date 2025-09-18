@@ -179,11 +179,34 @@ static order_info_t *find_order_by_id(const char *order_id) {
     return NULL;
 }
 
-// 创建订单行（带订单ID）
+// 创建菜品卡片（优化版）
+static lv_obj_t* create_dish_card(lv_obj_t* parent, const char* dish_name) {
+    lv_obj_t *dish_card = lv_obj_create(parent);
+    if (!dish_card) return NULL;
+    
+    int text_len = strlen(dish_name);
+    int card_width = LV_MAX(text_len * 14 + 20, 60); // 优化宽度计算
+    lv_obj_set_size(dish_card, card_width, 39);
+    lv_obj_set_style_bg_color(dish_card, lv_color_hex(0xF1F1F1), 0);
+    lv_obj_set_style_radius(dish_card, 5, 0);
+    lv_obj_set_style_pad_all(dish_card, 8, 0);
+    lv_obj_set_style_border_width(dish_card, 0, 0);
+    lv_obj_set_style_margin_all(dish_card, 5, 0);
+    
+    lv_obj_t *dish_label = lv_label_create(dish_card);
+    lv_label_set_text(dish_label, dish_name);
+    lv_obj_set_style_text_font(dish_label, &lv_font_mulan_24, 0);
+    lv_obj_set_style_text_color(dish_label, lv_color_black(), 0);
+    lv_obj_center(dish_label);
+    
+    return dish_card;
+}
+
+// 创建订单行（带订单ID）- 优化版
 void create_dynamic_order_row_with_id(const char *order_id, int order_num, const char *dishes) {
     bsp_display_lock(portMAX_DELAY);
     
-    // 首次添加订单时，清理"等待订单数据..."占位标签
+    // 清理等待标签
     if (waiting_label && lv_obj_is_valid(waiting_label)) {
         lv_obj_del(waiting_label);
         waiting_label = NULL;
@@ -206,53 +229,34 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
         return;
     }
     
+    memset(order, 0, sizeof(order_info_t));
     order->order_id = strdup(order_id);
-    if (!order->order_id) {
-        free(order);
-        lv_obj_del(row);
-        bsp_display_unlock();
-        ESP_LOGE(TAG, "复制订单ID失败");
-        return;
-    }
-    
-    order->order_num = order_num;
     order->dishes = strdup(dishes);
-    if (!order->dishes) {
-        free(order->order_id);
-        free(order);
-        lv_obj_del(row);
-        bsp_display_unlock();
-        ESP_LOGE(TAG, "复制菜品信息失败");
-        return;
-    }
-    
+    order->order_num = order_num;
     order->row_widget = row;
     order->status = ORDER_STATUS_PENDING;
-    order->dish_label = NULL; // 初始化菜品标签指针
-    // 设置订单行样式 - 带刷新保护
+    
+    if (!order->order_id || !order->dishes) {
+        if (order->order_id) free(order->order_id);
+        if (order->dishes) free(order->dishes);
+        free(order);
+        lv_obj_del(row);
+        bsp_display_unlock();
+        ESP_LOGE(TAG, "复制订单信息失败");
+        return;
+    }
+
+    // 设置订单行样式
     lv_obj_set_size(row, LV_PCT(100), 96);
-    lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE); // 启用事件冒泡
-    lv_obj_add_flag(row, LV_OBJ_FLAG_IGNORE_LAYOUT); // 忽略自动布局
-    lv_obj_set_style_transform_zoom(row, 256, 0); // 防止缩放导致的渲染问题
-    lv_obj_set_style_transform_angle(row, 0, 0); // 重置旋转角度
-    lv_obj_set_style_clip_corner(row, true, 0); // 启用角落裁剪
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_SPACE_BETWEEN);
     lv_obj_set_style_pad_all(row, 10, 0);
     lv_obj_set_style_radius(row, 5, 0);
-    lv_obj_set_style_border_width(row, 1, 0);
-    lv_obj_set_style_border_color(row, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_border_opa(row, 25, 0);
-    lv_obj_set_style_bg_color(row, lv_color_white(), 0); // 设置白色背景
+    lv_obj_set_style_bg_color(row, lv_color_white(), 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    
-    // 初始化字体引用
-    (void)&lv_font_mulan_24; // 确保字体被引用
-
-    // 将新订单行移动到容器顶部
     lv_obj_move_to_index(row, 0);
 
-    // 左侧：订单信息（水平排列菜品）
+    // 左侧：菜品容器
     lv_obj_t *left_container = lv_obj_create(row);
     if (!left_container) {
         free(order->dishes);
@@ -264,18 +268,13 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
         return;
     }
     
-    // 设置左侧容器为水平布局，用于放置多个菜品卡片
-    lv_obj_set_flex_flow(left_container, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(left_container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    // 设置左侧容器宽度为屏幕宽度的70%，确保有足够空间显示菜品
     lv_obj_set_width(left_container, LV_PCT(70));
     lv_obj_set_height(left_container, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(left_container, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_style_border_width(left_container, 0, 0);
     lv_obj_set_style_pad_all(left_container, 0, 0);
-    // 允许容器内容换行显示，当一行放不下时
-    lv_obj_set_style_flex_flow(left_container, LV_FLEX_FLOW_ROW_WRAP, 0);
     
-    // 解析JSON格式的菜品信息
+    // 解析菜品信息
     cJSON *root = cJSON_Parse(dishes);
     if (root) {
         cJSON *items = cJSON_GetObjectItem(root, "items");
@@ -284,99 +283,27 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
             cJSON_ArrayForEach(item, items) {
                 cJSON *name = cJSON_GetObjectItem(item, "name");
                 if (name && cJSON_IsString(name)) {
-                    const char *dish_name = name->valuestring;
-                    
-                    // 创建菜品卡片 - 根据Figma设计优化
-                    lv_obj_t *dish_card = lv_obj_create(left_container);
-                    int text_len = strlen(dish_name);
-                    int card_width = LV_MAX(text_len * 20 + 20, 70); // 更精确的宽度计算
-                    lv_obj_set_size(dish_card, card_width, 39);
-                    lv_obj_set_style_bg_color(dish_card, lv_color_hex(0xF1F1F1), 0); // 灰色背景 #F1F1F1
-                    lv_obj_set_style_radius(dish_card, 5, 0); // 圆角5px
-                    lv_obj_set_style_pad_all(dish_card, 8, 0); // 内边距8px
-                    lv_obj_set_style_border_width(dish_card, 0, 0); // 无边框
-                    
-                    // 创建菜品标签 - 根据Figma设计优化
-                    lv_obj_t *dish_label = lv_label_create(dish_card);
-                    lv_label_set_text(dish_label, dish_name);
-                    lv_obj_set_style_text_font(dish_label, &lv_font_mulan_24, 0); // 24px字体
-                    lv_obj_align(dish_label, LV_ALIGN_CENTER, 0, 0);
-                    lv_obj_set_style_text_color(dish_label, lv_color_black(), 0); // 黑色文字
-                    lv_obj_add_flag(dish_label, LV_OBJ_FLAG_HIDDEN); // 初始隐藏
-                    lv_obj_add_flag(dish_label, LV_OBJ_FLAG_FLOATING); // 浮动模式
-                    lv_obj_clear_flag(dish_label, LV_OBJ_FLAG_SCROLLABLE); // 禁用滚动
-                    lv_obj_set_style_transform_zoom(dish_label, 256, 0);
-                    lv_obj_set_style_transform_angle(dish_label, 0, 0);
-                    
-                    // 延迟显示以避免刷新问题
-                    lv_anim_t a;
-                    lv_anim_init(&a);
-                    lv_anim_set_var(&a, dish_label);
-                    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_clear_flag);
-                    lv_anim_set_values(&a, LV_OBJ_FLAG_HIDDEN, 0);
-                    lv_anim_set_time(&a, 50);
-                    lv_anim_set_delay(&a, 10);
-                    lv_anim_start(&a);
-                    
-                    // 设置卡片之间的间距
-                    lv_obj_set_style_margin_all(dish_card, 5, 0); // 所有方向都设置5px的外边距
+                    create_dish_card(left_container, name->valuestring);
                 }
             }
         }
         cJSON_Delete(root);
     } else {
-        // 如果JSON解析失败，回退到原来的字符串解析方式
+        // 回退到字符串解析
         char *dishes_copy = strdup(dishes);
         if (dishes_copy) {
             char *token = strtok(dishes_copy, " ");
-            (void)0; // 移除未使用的x_offset变量
-            
-            while (token != NULL) {
-                // 创建菜品卡片 - 优化版
-                lv_obj_t *dish_card = lv_obj_create(left_container);
-                int text_len = strlen(token);
-                int card_width = LV_MAX(text_len * 20 + 20, 70); // 更精确的宽度计算
-                lv_obj_set_size(dish_card, card_width, 39);
-                lv_obj_set_style_bg_color(dish_card, lv_color_hex(0xF1F1F1), 0);
-                lv_obj_set_style_radius(dish_card, 5, 0);
-                lv_obj_set_style_pad_all(dish_card, 8, 0); // 增加内边距
-                
-                // 创建带保护的菜品标签
-                lv_obj_t *dish_label = lv_label_create(dish_card);
-                lv_label_set_text(dish_label, token);
-                lv_obj_set_style_text_font(dish_label, &lv_font_mulan_24, 0);
-                lv_obj_align(dish_label, LV_ALIGN_CENTER, 0, 0);
-                lv_obj_set_style_text_color(dish_label, lv_color_black(), 0);
-                lv_obj_add_flag(dish_label, LV_OBJ_FLAG_HIDDEN); // 初始隐藏
-                lv_obj_add_flag(dish_label, LV_OBJ_FLAG_FLOATING); // 浮动模式
-                lv_obj_clear_flag(dish_label, LV_OBJ_FLAG_SCROLLABLE); // 禁用滚动
-                lv_obj_set_style_transform_zoom(dish_label, 256, 0);
-                lv_obj_set_style_transform_angle(dish_label, 0, 0);
-                
-                // 延迟显示以避免刷新问题
-                lv_anim_t a;
-                lv_anim_init(&a);
-                lv_anim_set_var(&a, dish_label);
-                lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_clear_flag);
-                lv_anim_set_values(&a, LV_OBJ_FLAG_HIDDEN, 0);
-                lv_anim_set_time(&a, 50);
-                lv_anim_set_delay(&a, 10);
-                lv_anim_start(&a);
-                
-                // 设置卡片之间的间距
-                lv_obj_set_style_margin_all(dish_card, 5, 0); // 所有方向都设置5px的外边距
-                
+            while (token) {
+                create_dish_card(left_container, token);
                 token = strtok(NULL, " ");
             }
-            
             free(dishes_copy);
         }
     }
     
-    // 保存菜品容器指针到订单信息中（而不是单个标签）
     order->dish_label = left_container;
 
-    // 右侧：已出餐按钮 - 根据Figma设计调整
+    // 右侧：已出餐按钮
     lv_obj_t *btn_ready = lv_btn_create(row);
     if (!btn_ready) {
         free(order->dishes);
@@ -389,42 +316,21 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
         return;
     }
     
-    // 按钮样式优化 - 根据Figma设计
-    lv_obj_set_size(btn_ready, 143, 74); // 143x74px按钮
+    lv_obj_set_size(btn_ready, 143, 74);
     lv_obj_align(btn_ready, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(btn_ready, lv_color_hex(0x52E011), LV_PART_MAIN); // 绿色背景 #52E011
-    lv_obj_set_style_radius(btn_ready, 5, 0); // 圆角5px
-    lv_obj_set_style_border_width(btn_ready, 0, 0); // 无边框
+    lv_obj_set_style_bg_color(btn_ready, lv_color_hex(0x52E011), LV_PART_MAIN);
+    lv_obj_set_style_radius(btn_ready, 5, 0);
+    lv_obj_set_style_border_width(btn_ready, 0, 0);
     lv_obj_clear_flag(btn_ready, LV_OBJ_FLAG_SCROLLABLE);
     
-    // 按钮字体引用
-    (void)&lv_font_mulan_24; // 确保字体被引用
-
-    // 按钮文字
     lv_obj_t *btn_label = lv_label_create(btn_ready);
-    if (!btn_label) {
-        free(order->dishes);
-        free(order->order_id);
-        free(order);
-        lv_obj_del(btn_ready);
-        lv_obj_del(left_container);
-        lv_obj_del(row);
-        bsp_display_unlock();
-        ESP_LOGE(TAG, "创建按钮标签失败");
-        return;
-    }
-    
     lv_label_set_text(btn_label, "已出餐");
-    lv_obj_set_style_text_color(btn_label, lv_color_white(), 0); // 白色文字
-    lv_obj_set_style_text_font(btn_label, &lv_font_mulan_24, 0); // 24px字体
+    lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(btn_label, &lv_font_mulan_24, 0);
     lv_obj_center(btn_label);
-
-    // 添加点击事件
     lv_obj_add_event_cb(btn_ready, btn_ready_cb, LV_EVENT_CLICKED, NULL);
 
-    // UI构建成功，将订单插入队列
     STAILQ_INSERT_TAIL(&order_list, order, entries);
-
     bsp_display_unlock();
 }
 
