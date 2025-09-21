@@ -1,5 +1,5 @@
-#include "order_ui.h"
 #include "lvgl.h"
+#include "order_ui.h"
 #include "esp_log.h"
 #include "bsp/display.h"
 #include "bsp/esp-bsp.h"
@@ -12,8 +12,10 @@
 extern int send_notification(const char *json_str);
 
 // 外部声明字体
-extern lv_font_t lv_font_mulan_14;
-extern lv_font_t lv_font_mulan_24;
+/* extern lv_font_t lv_font_mulan_14; */
+extern lv_font_t lv_font_dishes_24;
+extern lv_font_t lv_font_device_24;
+LV_FONT_DECLARE(lv_font_montserrat_14)
 
 static const char *TAG = "OrderUI";
 static lv_obj_t *orders_container = NULL;
@@ -52,7 +54,7 @@ static void btn_ready_cb(lv_event_t *e)
     lv_obj_t *btn = lv_event_get_target(e);
     lv_obj_t *label = lv_obj_get_child(btn, 0);  // 获取按钮内的 label
     if (label) {
-        lv_label_set_text(label, "✅ 已出餐");
+        lv_label_set_text(label, "出餐");
     }
 
     // 修改按钮背景色为灰色（针对MAIN部分）
@@ -101,8 +103,8 @@ void order_ui_init(lv_obj_t *parent)
 
     // 初始显示等待数据
     waiting_label = lv_label_create(orders_container);
-    lv_obj_set_style_text_font(waiting_label, &lv_font_mulan_14, 0);
-    lv_label_set_text(waiting_label, "等待订单数据...");
+    lv_obj_set_style_text_font(waiting_label, &lv_font_device_24, 0);
+    lv_label_set_text(waiting_label, "等待连接...");
     lv_obj_center(waiting_label);
 
     bsp_display_unlock();
@@ -146,7 +148,7 @@ void show_popup_message(const char *message, uint32_t duration_ms) {
     lv_obj_set_style_bg_opa(popup, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(popup, 0, 0);
     lv_obj_set_style_pad_all(popup, 5, 0);
-    lv_obj_set_style_text_font(popup, &lv_font_mulan_14, 0);
+    lv_obj_set_style_text_font(popup, &lv_font_montserrat_14, 0);
 
     // 创建消息标签
     lv_obj_t *label = lv_label_create(popup);
@@ -195,7 +197,7 @@ static lv_obj_t* create_dish_card(lv_obj_t* parent, const char* dish_name) {
     
     lv_obj_t *dish_label = lv_label_create(dish_card);
     lv_label_set_text(dish_label, dish_name);
-    lv_obj_set_style_text_font(dish_label, &lv_font_mulan_24, 0);
+    lv_obj_set_style_text_font(dish_label, &lv_font_dishes_24, 0);
     lv_obj_set_style_text_color(dish_label, lv_color_black(), 0);
     lv_obj_center(dish_label);
     
@@ -324,9 +326,9 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
     lv_obj_clear_flag(btn_ready, LV_OBJ_FLAG_SCROLLABLE);
     
     lv_obj_t *btn_label = lv_label_create(btn_ready);
-    lv_label_set_text(btn_label, "已出餐");
+    lv_label_set_text(btn_label, "出餐");
     lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(btn_label, &lv_font_mulan_24, 0);
+    lv_obj_set_style_text_font(btn_label, &lv_font_device_24, 0);
     lv_obj_center(btn_label);
     lv_obj_add_event_cb(btn_ready, btn_ready_cb, LV_EVENT_CLICKED, NULL);
 
@@ -368,8 +370,8 @@ void remove_order_by_id(const char *order_id) {
     // 如果删除后队列为空，恢复等待标签
     if (STAILQ_EMPTY(&order_list) && orders_container && lv_obj_is_valid(orders_container) && !waiting_label) {
         waiting_label = lv_label_create(orders_container);
-        lv_obj_set_style_text_font(waiting_label, &lv_font_mulan_14, 0);
-        lv_label_set_text(waiting_label, "等待订单数据...");
+        lv_obj_set_style_text_font(waiting_label, &lv_font_device_24, 0);
+        lv_label_set_text(waiting_label, "已连接");
         lv_obj_center(waiting_label);
     }
 

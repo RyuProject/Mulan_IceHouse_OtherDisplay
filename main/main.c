@@ -14,7 +14,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "cJSON.h"
-#include "lv_font_mulan_14.c"
+/* #include "lv_font_mulan_14.c" */
 #include "order_ui.h"
 #include "hex_utils.h"
 #include "utf8_validator.h"
@@ -22,7 +22,7 @@
 
 static const char *TAG = "NimBLE_BLE_PRPH";
 
-LV_FONT_DECLARE(lv_font_mulan_14);
+/* Use LVGL built-in Montserrat font instead of missing mulan font */
 
 static void create_order_ui(void)
 {
