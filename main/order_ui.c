@@ -5,6 +5,7 @@
 #include "bsp/esp-bsp.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "sys/queue.h"
 #include "cJSON.h"
 
@@ -181,6 +182,28 @@ static order_info_t *find_order_by_id(const char *order_id) {
     return NULL;
 }
 
+// Unicode十六进制编码解码函数
+static char* decode_unicode_hex(const char* hex_str) {
+    if (!hex_str) return NULL;
+    
+    size_t len = strlen(hex_str);
+    if (len % 2 != 0) return strdup(hex_str); // 非有效的十六进制字符串
+    
+    size_t out_len = len / 2 + 1;
+    char* result = malloc(out_len);
+    if (!result) return NULL;
+    
+    for (size_t i = 0, j = 0; i < len; i += 2, j++) {
+        char hex[3] = {hex_str[i], hex_str[i+1], '\0'};
+        int value;
+        sscanf(hex, "%x", &value);
+        result[j] = (char)value;
+    }
+    result[out_len - 1] = '\0';
+    
+    return result;
+}
+
 // 创建菜品卡片（优化版）
 static lv_obj_t* create_dish_card(lv_obj_t* parent, const char* dish_name) {
     lv_obj_t *dish_card = lv_obj_create(parent);
@@ -281,13 +304,31 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
     if (root) {
         cJSON *items = cJSON_GetObjectItem(root, "items");
         if (items && cJSON_IsArray(items)) {
+            // 记录菜品数量，用于调试
+            int item_count = cJSON_GetArraySize(items);
+            ESP_LOGI(TAG, "菜品数量: %d", item_count);
+            
             cJSON *item = NULL;
             cJSON_ArrayForEach(item, items) {
                 cJSON *name = cJSON_GetObjectItem(item, "name");
                 if (name && cJSON_IsString(name)) {
-                    create_dish_card(left_container, name->valuestring);
+                    // 记录原始编码的菜品名称
+                    ESP_LOGI(TAG, "原始菜品名称: %s", name->valuestring);
+                    
+                    // 解码Unicode编码的菜品名称
+                    char* decoded_name = decode_unicode_hex(name->valuestring);
+                    if (decoded_name) {
+                        ESP_LOGI(TAG, "解码后菜品名称: %s", decoded_name);
+                        create_dish_card(left_container, decoded_name);
+                        free(decoded_name);
+                    } else {
+                        ESP_LOGI(TAG, "解码失败，使用原始名称");
+                        create_dish_card(left_container, name->valuestring);
+                    }
                 }
             }
+        } else {
+            ESP_LOGW(TAG, "JSON中没有找到items数组或格式不正确");
         }
         cJSON_Delete(root);
     } else {
@@ -400,9 +441,55 @@ void update_order_by_id(const char *order_id, int order_num, const char *dishes)
         order->dishes = new_dishes;
     }
     
-    // 更新UI显示 - 使用保存的菜品标签指针
+    // 更新UI显示 - 清除旧的菜品卡片并创建新的
     if (order->dish_label && lv_obj_is_valid(order->dish_label)) {
-        lv_label_set_text_fmt(order->dish_label, "%s", order->dishes);
+        // 清除所有子对象（菜品卡片）
+        lv_obj_clean(order->dish_label);
+        
+        // 重新解析菜品信息并创建卡片
+        cJSON *root = cJSON_Parse(dishes);
+        if (root) {
+            cJSON *items = cJSON_GetObjectItem(root, "items");
+            if (items && cJSON_IsArray(items)) {
+                // 记录菜品数量，用于调试
+                int item_count = cJSON_GetArraySize(items);
+                ESP_LOGI(TAG, "更新菜品数量: %d", item_count);
+                
+                cJSON *item = NULL;
+                cJSON_ArrayForEach(item, items) {
+                    cJSON *name = cJSON_GetObjectItem(item, "name");
+                    if (name && cJSON_IsString(name)) {
+                        // 记录原始编码的菜品名称
+                        ESP_LOGI(TAG, "更新原始菜品名称: %s", name->valuestring);
+                        
+                        // 使用已有的解码函数
+                        char* decoded_name = decode_unicode_hex(name->valuestring);
+                        if (decoded_name) {
+                            ESP_LOGI(TAG, "更新解码后菜品名称: %s", decoded_name);
+                            create_dish_card(order->dish_label, decoded_name);
+                            free(decoded_name);
+                        } else {
+                            ESP_LOGI(TAG, "更新解码失败，使用原始名称");
+                            create_dish_card(order->dish_label, name->valuestring);
+                        }
+                    }
+                }
+            } else {
+                ESP_LOGW(TAG, "更新JSON中没有找到items数组或格式不正确");
+            }
+            cJSON_Delete(root);
+        } else {
+            // 回退到字符串解析
+            char *dishes_copy = strdup(dishes);
+            if (dishes_copy) {
+                char *token = strtok(dishes_copy, " ");
+                while (token) {
+                    create_dish_card(order->dish_label, token);
+                    token = strtok(NULL, " ");
+                }
+                free(dishes_copy);
+            }
+        }
     }
     
     bsp_display_unlock();
