@@ -20,7 +20,7 @@ bool hex_is_valid(const char *str) {
     return true;
 }
 
-/* 十六进制字符串转换为普通字符串 */
+/* 十六进制字符串转换为UTF-8字符串 */
 int hex_to_ascii(const char *hex, char *output, size_t output_size) {
     int hex_len = strlen(hex);
     if (hex_len % 2 != 0 || output_size < hex_len / 2 + 1) {
@@ -31,7 +31,15 @@ int hex_to_ascii(const char *hex, char *output, size_t output_size) {
     for (int i = 0; i < hex_len; i += 2) {
         uint8_t high = hex_char_to_value(hex[i]);
         uint8_t low = hex_char_to_value(hex[i + 1]);
-        output[j++] = (high << 4) | low;
+        uint8_t byte = (high << 4) | low;
+        
+        // 对于中文字符（UTF-8编码），直接存储字节
+        output[j++] = byte;
+        
+        // 检查输出缓冲区是否已满
+        if (j >= output_size - 1) {
+            break;
+        }
     }
     output[j] = '\0';
     return j;
