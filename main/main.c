@@ -443,17 +443,17 @@ void app_main(void)
 
     nimble_port_freertos_init(bleprph_host_task);
 
-    // 优化显示配置 - 提高性能
+    // 进一步优化显示配置 - 30Hz刷新率 + 单缓冲区
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = {
-            .task_priority = 6,     // 高优先级文字渲染
-            .task_stack = 8192,      // 充足堆栈
+            .task_priority = 10,     // 最高优先级确保字体渲染
+            .task_stack = 32768,     // 进一步增加堆栈
             .task_affinity = -1,
-            .task_max_sleep_ms = 2,  // 最小睡眠时间
-            .timer_period_ms = 1     // 最小定时器周期
+            .task_max_sleep_ms = 0,  // 无睡眠时间
+            .timer_period_ms = 33     // 30Hz刷新率
         },
-        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE * 4,  // 4倍缓冲区
-        .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
+        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE * 16,  // 16倍缓冲区
+        .double_buffer = false,      // 单缓冲区模式
         .flags = {
             .buff_dma = true,        // DMA加速
             .buff_spiram = true,     // SPIRAM内存
