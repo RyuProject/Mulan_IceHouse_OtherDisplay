@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include "sys/queue.h"
 #include "cJSON.h"
+#include "nimble/nimble_port.h"
+#include "host/ble_hs.h"
 
 // 外部声明send_notification函数
 extern int send_notification(const char *json_str);
@@ -17,10 +19,40 @@ extern int send_notification(const char *json_str);
 extern lv_font_t lv_font_dishes_24;
 extern lv_font_t lv_font_device_24;
 LV_FONT_DECLARE(lv_font_montserrat_14)
+LV_FONT_DECLARE(lv_font_simsun_16_cjk)
 
 static const char *TAG = "OrderUI";
 static lv_obj_t *orders_container = NULL;
 static lv_obj_t *waiting_label = NULL; // 保存等待标签指针
+static lv_obj_t *bluetooth_label = NULL; // 保存蓝牙状态标签指针
+static lv_timer_t *bluetooth_timer = NULL; // 蓝牙状态更新定时器
+
+// 检查蓝牙连接状态
+static bool is_bluetooth_connected(void) {
+    extern uint16_t g_conn_handle;
+    return g_conn_handle != BLE_HS_CONN_HANDLE_NONE;
+}
+
+// 更新蓝牙状态显示
+static void update_bluetooth_status(void) {
+    if (!bluetooth_label || !lv_obj_is_valid(bluetooth_label)) return;
+    
+    bsp_display_lock(portMAX_DELAY);
+    if (is_bluetooth_connected()) {
+        lv_label_set_text(bluetooth_label, LV_SYMBOL_BLUETOOTH "OK");
+        lv_obj_set_style_text_color(bluetooth_label, lv_color_hex(0x0CC160), 0); // 绿色
+    } else {
+        lv_label_set_text(bluetooth_label, LV_SYMBOL_BLUETOOTH "READY");
+        lv_obj_set_style_text_color(bluetooth_label, lv_color_hex(0xFF9500), 0); // 橙色
+    }
+    bsp_display_unlock();
+}
+
+// 蓝牙状态定时器回调
+static void bluetooth_timer_cb(lv_timer_t *timer) {
+    if (!timer) return;
+    update_bluetooth_status();
+}
 
 // 订单状态枚举
 typedef enum {
@@ -53,24 +85,22 @@ static void btn_ready_cb(lv_event_t *e)
     bsp_display_lock(portMAX_DELAY);
     
     lv_obj_t *btn = lv_event_get_target(e);
-    lv_obj_t *label = lv_obj_get_child(btn, 0);  // 获取按钮内的 label
-    if (label) {
-        lv_label_set_text(label, "出餐");
-    }
-
-    // 修改按钮背景色为灰色（针对MAIN部分）
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0xCCCCCC), LV_PART_MAIN);
-
-    // 禁用按钮交互
-    lv_obj_add_state(btn, LV_STATE_DISABLED);
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-
-    // 获取订单ID (从按钮的父对象中获取)
+    
+    // 获取订单行和订单信息
     lv_obj_t *row = lv_obj_get_parent(btn);
     if (row) {
         order_info_t *order = NULL;
         STAILQ_FOREACH(order, &order_list, entries) {
             if (order->row_widget == row) {
+                // 删除出餐按钮
+                lv_obj_del(btn);
+                
+                // 将订单行背景色改为灰色
+                lv_obj_set_style_bg_color(row, lv_color_hex(0xCCCCCC), 0);
+                
+                // 更新订单状态为已完成
+                order->status = ORDER_STATUS_COMPLETED;
+                
                 // 构建JSON通知消息
                 char notify_msg[128];
                 snprintf(notify_msg, sizeof(notify_msg), 
@@ -86,7 +116,7 @@ static void btn_ready_cb(lv_event_t *e)
         }
     }
 
-    ESP_LOGI(TAG, "✅ 已出餐按钮被点击并已禁用");
+    ESP_LOGI(TAG, "✅ 已出餐按钮被点击并已移除");
     bsp_display_unlock();
 }
 
@@ -102,11 +132,58 @@ void order_ui_init(lv_obj_t *parent)
     lv_obj_set_scrollbar_mode(orders_container, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_style_pad_all(orders_container, 10, 0);
 
-    // 初始显示等待数据
-    waiting_label = lv_label_create(orders_container);
-    lv_obj_set_style_text_font(waiting_label, &lv_font_device_24, 0);
-    lv_label_set_text(waiting_label, "等待连接...");
-    lv_obj_center(waiting_label);
+    // 初始显示等待数据 - 使用混合字体
+    lv_obj_t *waiting_container = lv_obj_create(orders_container);
+    lv_obj_set_size(waiting_container, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(waiting_container, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(waiting_container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(waiting_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(waiting_container, 0, 0);
+    lv_obj_set_style_pad_all(waiting_container, 0, 0);
+    lv_obj_center(waiting_container);
+    
+    // 中文部分使用设备字体（优化显示）
+    lv_obj_t *text_label = lv_label_create(waiting_container);
+    lv_obj_set_style_text_font(text_label, &lv_font_device_24, 0);
+    lv_obj_set_style_text_color(text_label, lv_color_hex(0x2C2C2C), 0); // 深色提高可读性
+    lv_label_set_text(text_label, "等待蓝牙连接");
+    
+    // 省略号部分使用Montserrat字体（优化对齐）
+    lv_obj_t *dots_label = lv_label_create(waiting_container);
+    lv_obj_set_style_text_font(dots_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(dots_label, lv_color_hex(0x666666), 0); // 灰色
+    lv_obj_set_style_pad_top(dots_label, 2, 0); // 垂直居中微调
+    lv_label_set_text(dots_label, "...");
+    
+    waiting_label = waiting_container;
+
+    // 创建底部状态栏（按照Figma设计）
+    lv_obj_t *status_bar = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(status_bar, LV_PCT(100), 40);
+    lv_obj_align(status_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(status_bar, lv_color_hex(0xF1F1F1), 0);
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_pad_all(status_bar, 0, 0);
+    
+    lv_obj_t *bar_label = lv_label_create(status_bar);
+    lv_label_set_text(bar_label, "MuLanKDS ver0.1");
+    lv_obj_align(bar_label, LV_ALIGN_LEFT_MID, 18, 0);
+
+    // 电量显示
+    lv_obj_t *battery_label = lv_label_create(status_bar);
+    lv_label_set_text(battery_label, LV_SYMBOL_BATTERY_FULL "OK");
+    lv_obj_align(battery_label, LV_ALIGN_LEFT_MID, 170, 0);
+    
+    // 蓝牙状态显示
+    bluetooth_label = lv_label_create(status_bar);
+    update_bluetooth_status(); // 初始设置状态
+    lv_obj_align(bluetooth_label, LV_ALIGN_LEFT_MID, 230, 0);
+
+    // 创建蓝牙状态更新定时器（每秒更新一次）
+    bluetooth_timer = lv_timer_create(bluetooth_timer_cb, 1000, NULL);
+    if (bluetooth_timer) {
+        lv_timer_set_repeat_count(bluetooth_timer, -1); // 无限重复
+    }
 
     bsp_display_unlock();
 }
@@ -204,27 +281,22 @@ static char* decode_unicode_hex(const char* hex_str) {
     return result;
 }
 
-// 创建菜品卡片（优化版）
+// 高性能菜品卡片创建（优化中文显示）
 static lv_obj_t* create_dish_card(lv_obj_t* parent, const char* dish_name) {
-    lv_obj_t *dish_card = lv_obj_create(parent);
-    if (!dish_card) return NULL;
+    lv_obj_t *dish_label = lv_label_create(parent);
+    if (!dish_label) return NULL;
     
-    int text_len = strlen(dish_name);
-    int card_width = LV_MAX(text_len * 14 + 20, 60); // 优化宽度计算
-    lv_obj_set_size(dish_card, card_width, 39);
-    lv_obj_set_style_bg_color(dish_card, lv_color_hex(0xF1F1F1), 0);
-    lv_obj_set_style_radius(dish_card, 5, 0);
-    lv_obj_set_style_pad_all(dish_card, 8, 0);
-    lv_obj_set_style_border_width(dish_card, 0, 0);
-    lv_obj_set_style_margin_all(dish_card, 5, 0);
-    
-    lv_obj_t *dish_label = lv_label_create(dish_card);
     lv_label_set_text(dish_label, dish_name);
     lv_obj_set_style_text_font(dish_label, &lv_font_dishes_24, 0);
-    lv_obj_set_style_text_color(dish_label, lv_color_black(), 0);
-    lv_obj_center(dish_label);
+    lv_obj_set_style_text_color(dish_label, lv_color_hex(0x333333), 0); // 深灰色提高可读性
+    lv_obj_set_style_pad_all(dish_label, 8, 0);
+    lv_obj_set_style_margin_all(dish_label, 5, 0);
+    lv_obj_set_style_bg_color(dish_label, lv_color_hex(0xF8F8F8), 0); // 更浅的背景色
+    lv_obj_set_style_radius(dish_label, 6, 0); // 稍微增加圆角
+    lv_obj_set_style_border_width(dish_label, 0, 0);
+    lv_obj_set_style_text_opa(dish_label, LV_OPA_COVER, 0);
     
-    return dish_card;
+    return dish_label;
 }
 
 // 创建订单行（带订单ID）- 优化版
@@ -271,17 +343,17 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
         return;
     }
 
-    // 设置订单行样式
-    lv_obj_set_size(row, LV_PCT(100), 96);
+    // 高性能订单行样式（简化）
+    lv_obj_set_size(row, LV_PCT(100), 80);  // 减少高度节省内存
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_SPACE_BETWEEN);
-    lv_obj_set_style_pad_all(row, 10, 0);
-    lv_obj_set_style_radius(row, 5, 0);
+    lv_obj_set_style_pad_all(row, 8, 0);    // 减少内边距
+    lv_obj_set_style_radius(row, 3, 0);    // 简化圆角
     lv_obj_set_style_bg_color(row, lv_color_white(), 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_move_to_index(row, 0);
 
-    // 左侧：菜品容器
+    // 左侧：菜品容器（简化版）
     lv_obj_t *left_container = lv_obj_create(row);
     if (!left_container) {
         free(order->dishes);
@@ -298,55 +370,31 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
     lv_obj_set_flex_flow(left_container, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_style_border_width(left_container, 0, 0);
     lv_obj_set_style_pad_all(left_container, 0, 0);
+    lv_obj_set_style_bg_opa(left_container, LV_OPA_TRANSP, 0); // 透明背景减少渲染
     
-    // 解析菜品信息
+    // 高性能菜品解析（减少日志和内存分配）
     cJSON *root = cJSON_Parse(dishes);
     if (root) {
         cJSON *items = cJSON_GetObjectItem(root, "items");
         if (items && cJSON_IsArray(items)) {
-            // 记录菜品数量，用于调试
-            int item_count = cJSON_GetArraySize(items);
-            ESP_LOGI(TAG, "菜品数量: %d", item_count);
-            
             cJSON *item = NULL;
             cJSON_ArrayForEach(item, items) {
                 cJSON *name = cJSON_GetObjectItem(item, "name");
                 if (name && cJSON_IsString(name)) {
-                    // 记录原始编码的菜品名称
-                    ESP_LOGI(TAG, "原始菜品名称: %s", name->valuestring);
-                    
-                    // 解码Unicode编码的菜品名称
-                    char* decoded_name = decode_unicode_hex(name->valuestring);
-                    if (decoded_name) {
-                        ESP_LOGI(TAG, "解码后菜品名称: %s", decoded_name);
-                        create_dish_card(left_container, decoded_name);
-                        free(decoded_name);
-                    } else {
-                        ESP_LOGI(TAG, "解码失败，使用原始名称");
-                        create_dish_card(left_container, name->valuestring);
-                    }
+                    // 直接使用名称，避免不必要的解码和日志
+                    create_dish_card(left_container, name->valuestring);
                 }
             }
-        } else {
-            ESP_LOGW(TAG, "JSON中没有找到items数组或格式不正确");
         }
         cJSON_Delete(root);
     } else {
-        // 回退到字符串解析
-        char *dishes_copy = strdup(dishes);
-        if (dishes_copy) {
-            char *token = strtok(dishes_copy, " ");
-            while (token) {
-                create_dish_card(left_container, token);
-                token = strtok(NULL, " ");
-            }
-            free(dishes_copy);
-        }
+        // 简单字符串直接显示
+        create_dish_card(left_container, dishes);
     }
     
     order->dish_label = left_container;
 
-    // 右侧：已出餐按钮
+    // 右侧：创建真正的按钮对象
     lv_obj_t *btn_ready = lv_btn_create(row);
     if (!btn_ready) {
         free(order->dishes);
@@ -359,19 +407,17 @@ void create_dynamic_order_row_with_id(const char *order_id, int order_num, const
         return;
     }
     
-    lv_obj_set_size(btn_ready, 143, 74);
+    lv_obj_set_size(btn_ready, 100, 60);
     lv_obj_align(btn_ready, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(btn_ready, lv_color_hex(0x52E011), LV_PART_MAIN);
-    lv_obj_set_style_radius(btn_ready, 5, 0);
-    lv_obj_set_style_border_width(btn_ready, 0, 0);
-    lv_obj_clear_flag(btn_ready, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(btn_ready, lv_color_hex(0x4CAF50), 0); // 更标准的绿色
+    lv_obj_add_event_cb(btn_ready, btn_ready_cb, LV_EVENT_CLICKED, NULL);
     
+    // 创建按钮标签
     lv_obj_t *btn_label = lv_label_create(btn_ready);
     lv_label_set_text(btn_label, "出餐");
     lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(btn_label, &lv_font_device_24, 0);
     lv_obj_center(btn_label);
-    lv_obj_add_event_cb(btn_ready, btn_ready_cb, LV_EVENT_CLICKED, NULL);
 
     STAILQ_INSERT_TAIL(&order_list, order, entries);
     bsp_display_unlock();
@@ -410,9 +456,12 @@ void remove_order_by_id(const char *order_id) {
 
     // 如果删除后队列为空，恢复等待标签
     if (STAILQ_EMPTY(&order_list) && orders_container && lv_obj_is_valid(orders_container) && !waiting_label) {
+        // 创建已连接状态标签（优化显示）
         waiting_label = lv_label_create(orders_container);
         lv_obj_set_style_text_font(waiting_label, &lv_font_device_24, 0);
+        lv_obj_set_style_text_color(waiting_label, lv_color_hex(0x4CAF50), 0); // 绿色表示已连接
         lv_label_set_text(waiting_label, "已连接");
+        lv_obj_center(waiting_label);
         lv_obj_center(waiting_label);
     }
 
@@ -441,54 +490,28 @@ void update_order_by_id(const char *order_id, int order_num, const char *dishes)
         order->dishes = new_dishes;
     }
     
-    // 更新UI显示 - 清除旧的菜品卡片并创建新的
+    // 高性能UI更新 - 直接更新菜品标签内容
     if (order->dish_label && lv_obj_is_valid(order->dish_label)) {
         // 清除所有子对象（菜品卡片）
         lv_obj_clean(order->dish_label);
         
-        // 重新解析菜品信息并创建卡片
+        // 简单解析并显示菜品
         cJSON *root = cJSON_Parse(dishes);
         if (root) {
             cJSON *items = cJSON_GetObjectItem(root, "items");
             if (items && cJSON_IsArray(items)) {
-                // 记录菜品数量，用于调试
-                int item_count = cJSON_GetArraySize(items);
-                ESP_LOGI(TAG, "更新菜品数量: %d", item_count);
-                
                 cJSON *item = NULL;
                 cJSON_ArrayForEach(item, items) {
                     cJSON *name = cJSON_GetObjectItem(item, "name");
                     if (name && cJSON_IsString(name)) {
-                        // 记录原始编码的菜品名称
-                        ESP_LOGI(TAG, "更新原始菜品名称: %s", name->valuestring);
-                        
-                        // 使用已有的解码函数
-                        char* decoded_name = decode_unicode_hex(name->valuestring);
-                        if (decoded_name) {
-                            ESP_LOGI(TAG, "更新解码后菜品名称: %s", decoded_name);
-                            create_dish_card(order->dish_label, decoded_name);
-                            free(decoded_name);
-                        } else {
-                            ESP_LOGI(TAG, "更新解码失败，使用原始名称");
-                            create_dish_card(order->dish_label, name->valuestring);
-                        }
+                        create_dish_card(order->dish_label, name->valuestring);
                     }
                 }
-            } else {
-                ESP_LOGW(TAG, "更新JSON中没有找到items数组或格式不正确");
             }
             cJSON_Delete(root);
         } else {
-            // 回退到字符串解析
-            char *dishes_copy = strdup(dishes);
-            if (dishes_copy) {
-                char *token = strtok(dishes_copy, " ");
-                while (token) {
-                    create_dish_card(order->dish_label, token);
-                    token = strtok(NULL, " ");
-                }
-                free(dishes_copy);
-            }
+            // 简单字符串直接显示
+            create_dish_card(order->dish_label, dishes);
         }
     }
     

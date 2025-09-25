@@ -14,11 +14,21 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "cJSON.h"
-/* #include "lv_font_mulan_14.c" */
 #include "order_ui.h"
 #include "hex_utils.h"
 #include "utf8_validator.h"
+#include "lvgl.h"
 #include <stdlib.h>
+#include <string.h>
+
+LV_FONT_DECLARE(lv_font_simsun_16_cjk)
+
+// 性能优化配置
+#define MAX_DECODED_CONTENT_LEN 128
+#define MAX_DECODED_NAME_LEN 64
+#define JSON_BUFFER_SIZE 512
+#define MAX_DISHES_ITEMS 20
+#define DISHES_BUFFER_SIZE 512
 
 static const char *TAG = "NimBLE_BLE_PRPH";
 
@@ -34,7 +44,7 @@ static void create_order_ui(void)
 static ble_uuid16_t gatt_svc_uuid = BLE_UUID16_INIT(0xABCD);
 static ble_uuid16_t gatt_chr_uuid = BLE_UUID16_INIT(0x1234);
 static ble_uuid16_t gatt_notify_uuid = BLE_UUID16_INIT(0x5678);
-static uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t g_notify_handle = 0;
 
 static int bleprph_gap_event(struct ble_gap_event *event, void *arg);
@@ -118,52 +128,49 @@ static void handle_system_message(cJSON* root) {
     }
 }
 
-// 构建菜品字符串
-static char* build_dishes_string(cJSON* items) {
-    if (!items || !cJSON_IsArray(items)) return NULL;
+// 构建菜品字符串（高性能版）- 使用静态缓冲区避免内存分配
+static const char* build_dishes_string(cJSON* items, char* buffer, size_t buffer_size) {
+    if (!items || !cJSON_IsArray(items) || !buffer || buffer_size == 0) return NULL;
     
-    size_t capacity = 256;
-    char *dishes_str = malloc(capacity);
-    if (!dishes_str) return NULL;
-    
-    dishes_str[0] = '\0';
-    size_t dishes_len = 0;
+    buffer[0] = '\0';
+    char *current_pos = buffer;
+    size_t remaining = buffer_size - 1;
     int item_count = 0;
     
     cJSON *item = NULL;
     cJSON_ArrayForEach(item, items) {
+        if (item_count >= MAX_DISHES_ITEMS) break;
+        
         cJSON *name = cJSON_GetObjectItem(item, "name");
         if (!cJSON_IsString(name)) continue;
         
         char *name_str = name->valuestring;
-        char decoded_name[128] = {0};
+        char decoded_name[MAX_DECODED_NAME_LEN] = {0};
         
         // 尝试解码十六进制菜品名
         if (decode_hex_content(name_str, decoded_name, sizeof(decoded_name))) {
             name_str = decoded_name;
         }
         
-        size_t needed_len = dishes_len + (item_count > 0 ? 3 : 0) + strlen(name_str) + 1;
-        if (needed_len > capacity) {
-            capacity = needed_len * 2;
-            char *new_dishes = realloc(dishes_str, capacity);
-            if (!new_dishes) {
-                free(dishes_str);
-                return NULL;
-            }
-            dishes_str = new_dishes;
+        size_t name_len = strlen(name_str);
+        
+        // 添加分隔符（如果不是第一个菜品）
+        if (item_count > 0) {
+            if (remaining < 4) break; // 确保有足够空间
+            strncpy(current_pos, "、", remaining);
+            current_pos += 3;
+            remaining -= 3;
         }
         
-        if (item_count > 0) {
-            strcat(dishes_str, "、");
-            dishes_len += 3;
-        }
-        strcat(dishes_str, name_str);
-        dishes_len += strlen(name_str);
+        // 添加菜品名
+        if (name_len >= remaining) break; // 空间不足
+        strncpy(current_pos, name_str, remaining);
+        current_pos += name_len;
+        remaining -= name_len;
         item_count++;
     }
     
-    return item_count > 0 ? dishes_str : NULL;
+    return item_count > 0 ? buffer : NULL;
 }
 
 // 从订单ID生成订单号
@@ -187,38 +194,35 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
 {
     switch (ctxt->op) {
     case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-        uint8_t buf[512];
+        // 高性能：使用静态缓冲区，避免栈内存分配
+        static uint8_t json_buf[JSON_BUFFER_SIZE];
+        static char dishes_buf[DISHES_BUFFER_SIZE];
         uint16_t out_len = 0;
-        int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len);
+        int rc = ble_hs_mbuf_to_flat(ctxt->om, json_buf, sizeof(json_buf), &out_len);
         if (rc != 0) {
             ESP_LOGE(TAG, "ble_hs_mbuf_to_flat failed: %d", rc);
             return BLE_ATT_ERR_UNLIKELY;
         }
         
-        buf[out_len < sizeof(buf) ? out_len : sizeof(buf) - 1] = '\0';
-        ESP_LOGI(TAG, "收到蓝牙JSON信息: %s", (char *)buf);
+        json_buf[out_len < sizeof(json_buf) ? out_len : sizeof(json_buf) - 1] = '\0';
         
-        cJSON *root = cJSON_Parse((char *)buf);
-        if (!root) {
-            // 尝试处理非标准JSON格式
-            char *content_start = strstr((char *)buf, "content");
-            if (content_start) {
-                char *quote_start = strchr(content_start, '"');
-                if (quote_start) {
-                    char *quote_end = strchr(quote_start + 1, '"');
-                    if (quote_end) {
-                        *quote_end = '\0';
-                        char *hex_content = quote_start + 1;
-                        
-                        char decoded_content[256] = {0};
-                        if (decode_hex_content(hex_content, decoded_content, sizeof(decoded_content))) {
-                            ESP_LOGW(TAG, "解码内容: %s", decoded_content);
-                            show_popup_message(decoded_content, 3000);
-                        }
-                        *quote_end = '"';
-                    }
-                }
+        // 快速检查是否为简单消息（非JSON格式）
+        if (json_buf[0] != '{' && out_len < MAX_DECODED_CONTENT_LEN) {
+            char decoded_content[MAX_DECODED_CONTENT_LEN] = {0};
+            if (decode_hex_content((char *)json_buf, decoded_content, sizeof(decoded_content))) {
+                ESP_LOGW(TAG, "解码简单消息: %s", decoded_content);
+                show_popup_message(decoded_content, 1500); // 进一步缩短显示时间
             }
+            return 0;
+        }
+        
+        // 优化：只在调试时记录完整JSON
+        #ifdef CONFIG_BLE_DEBUG_JSON
+        ESP_LOGI(TAG, "收到蓝牙JSON信息: %s", (char *)json_buf);
+        #endif
+        
+        cJSON *root = cJSON_Parse((char *)json_buf);
+        if (!root) {
             return BLE_ATT_ERR_UNLIKELY;
         }
 
@@ -230,7 +234,7 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             if (strcmp(type_str, "info") == 0) {
                 handle_system_message(root);
             } else if (strcmp(type_str, "add") == 0 || strcmp(type_str, "update") == 0 || strcmp(type_str, "remove") == 0) {
-                bsp_display_lock(portMAX_DELAY);
+                bsp_display_lock(pdMS_TO_TICKS(500)); // 进一步减少锁等待时间
                 
                 cJSON *id = cJSON_GetObjectItem(root, "orderId");
                 if (!id || !cJSON_IsString(id)) {
@@ -245,20 +249,24 @@ static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 
                 if (strcmp(type_str, "remove") == 0) {
                     remove_order_by_id(order_id);
-                    show_popup_message("订单已删除", 2000);
+                    show_popup_message("订单已删除", 1000); // 缩短显示时间
                 } else {
-                    char *dishes_str = build_dishes_string(cJSON_GetObjectItem(root, "items"));
+                    cJSON *items = cJSON_GetObjectItem(root, "items");
+                    const char *dishes_str = "无菜品";
+                    
+                    if (items && cJSON_IsArray(items) && cJSON_GetArraySize(items) > 0) {
+                        dishes_str = build_dishes_string(items, dishes_buf, sizeof(dishes_buf));
+                    }
+                    
                     int order_num = generate_order_number(order_id);
                     
                     if (strcmp(type_str, "add") == 0) {
-                        create_dynamic_order_row_with_id(order_id, order_num, dishes_str ? dishes_str : "无菜品");
-                        show_popup_message("订单已添加", 2000);
+                        create_dynamic_order_row_with_id(order_id, order_num, dishes_str);
+                        show_popup_message("订单已添加", 1000);
                     } else {
-                        update_order_by_id(order_id, order_num, dishes_str ? dishes_str : "无菜品");
-                        show_popup_message("订单已更新", 2000);
+                        update_order_by_id(order_id, order_num, dishes_str);
+                        show_popup_message("订单已更新", 1000);
                     }
-                    
-                    if (dishes_str) free(dishes_str);
                 }
                 
                 bsp_display_unlock();
@@ -435,20 +443,29 @@ void app_main(void)
 
     nimble_port_freertos_init(bleprph_host_task);
 
+    // 优化显示配置 - 提高性能
     bsp_display_cfg_t cfg = {
-        .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
+        .lvgl_port_cfg = {
+            .task_priority = 6,     // 高优先级文字渲染
+            .task_stack = 8192,      // 充足堆栈
+            .task_affinity = -1,
+            .task_max_sleep_ms = 2,  // 最小睡眠时间
+            .timer_period_ms = 1     // 最小定时器周期
+        },
+        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE * 4,  // 4倍缓冲区
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
         .flags = {
-            .buff_dma = true,
-            .buff_spiram = true,
+            .buff_dma = true,        // DMA加速
+            .buff_spiram = true,     // SPIRAM内存
             .sw_rotate = false,
         }
     };
+    // LVGL内存配置通过lv_conf.h文件设置，此处仅配置显示参数
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
 
+    // 优化UI初始化
     bsp_display_lock(0);
-    order_ui_init(lv_scr_act());
+    create_order_ui();  // 使用已定义的函数
     bsp_display_unlock();
 }
