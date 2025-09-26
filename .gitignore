@@ -1,6 +1,10 @@
 build/
 sdkconfig
 sdkconfig.old
-managed_comoinents/
+managed_components/
 dependencies.lock
 temp/
+.cache/
+.vscode/
+.codebuddy/
+.env

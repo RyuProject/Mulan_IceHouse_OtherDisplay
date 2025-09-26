@@ -1,471 +1,272 @@
+/*
+ * SPDX-FileCopyrightText: 2022-2024 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: CC0-1.0
+ */
 
-#include "nvs_flash.h"
 #include "esp_log.h"
-#include "esp_err.h"
-#include "lvgl.h"
-#include "bsp/esp-bsp.h"
+#include "bsp/esp32_p4_function_ev_board.h"
 #include "bsp/display.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "host/ble_hs.h"
-#include "host/util/util.h"
-#include "host/ble_gap.h"
-#include "host/ble_gatt.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
-#include "cJSON.h"
-#include "order_ui.h"
-#include "hex_utils.h"
-#include "utf8_validator.h"
-#include "lvgl.h"
-#include <stdlib.h>
-#include <string.h>
+#include "bsp/touch.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_touch.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
-LV_FONT_DECLARE(lv_font_simsun_16_cjk)
+static const char *TAG = "main";
 
-// 性能优化配置
-#define MAX_DECODED_CONTENT_LEN 128
-#define MAX_DECODED_NAME_LEN 64
-#define JSON_BUFFER_SIZE 512
-#define MAX_DISHES_ITEMS 20
-#define DISHES_BUFFER_SIZE 512
+#define WHITE_COLOR 0xFFFF
+#define BLACK_COLOR 0x0000
+#define RED_COLOR   0xF800
+#define GREEN_COLOR 0x07E0
+#define BLUE_COLOR  0x001F
 
-static const char *TAG = "NimBLE_BLE_PRPH";
+static esp_lcd_panel_handle_t panel_handle = NULL;
+static esp_lcd_touch_handle_t touch_handle = NULL;
+static QueueHandle_t touch_event_queue = NULL;
 
-/* Use LVGL built-in Montserrat font instead of missing mulan font */
+typedef struct {
+    uint16_t x;
+    uint16_t y;
+    bool pressed;
+} touch_event_t;
 
-static void create_order_ui(void)
-{
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0xf5f5f5), 0);
-    order_ui_init(scr);
-}
-
-static ble_uuid16_t gatt_svc_uuid = BLE_UUID16_INIT(0xABCD);
-static ble_uuid16_t gatt_chr_uuid = BLE_UUID16_INIT(0x1234);
-static ble_uuid16_t gatt_notify_uuid = BLE_UUID16_INIT(0x5678);
-uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-static uint16_t g_notify_handle = 0;
-
-static int bleprph_gap_event(struct ble_gap_event *event, void *arg);
-static void bleprph_advertise(void);
-static void bleprph_on_sync(void);
-static void bleprph_on_reset(int reason);
-static void bleprph_host_task(void *param);
-int send_notification(const char *json_str)
-{
-    if (g_conn_handle == BLE_HS_CONN_HANDLE_NONE || g_notify_handle == 0) {
-        return -1;
-    }
-
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(json_str, strlen(json_str));
-    if (!om) {
-        return -1;
-    }
-
-    int rc = ble_gattc_notify_custom(g_conn_handle, g_notify_handle, om);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to send notification: %d", rc);
-        os_mbuf_free_chain(om);
-        return rc;
-    }
-
-    return 0;
-}
-
-static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
-                             struct ble_gatt_access_ctxt *ctxt, void *arg);
-
-static const struct ble_gatt_svc_def gatt_svcs[] = {
-    {
-        .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = (ble_uuid_t *)&gatt_svc_uuid,
-        .characteristics = (struct ble_gatt_chr_def[]) {
-            {
-                .uuid = (ble_uuid_t *)&gatt_chr_uuid,
-                .access_cb = bleprph_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_READ,
-                .val_handle = 0,
-            },
-            {
-                .uuid = (ble_uuid_t *)&gatt_notify_uuid,
-                .access_cb = bleprph_chr_access,
-                .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ,
-                .val_handle = &g_notify_handle,
-            },
-            {0}
-        },
-    },
-    {0}
-};
-
-// 解码十六进制字符串到ASCII
-static char* decode_hex_content(const char* hex_content, char* buffer, size_t buffer_size) {
-    if (!hex_content || !buffer || buffer_size == 0) return NULL;
-    
-    int hex_len = strlen(hex_content);
-    if (hex_len % 2 != 0 || !hex_is_valid(hex_content)) return NULL;
-    
-    int decoded_len = hex_to_ascii(hex_content, buffer, buffer_size);
-    return decoded_len > 0 ? buffer : NULL;
-}
-
-// 处理系统消息
-static void handle_system_message(cJSON* root) {
-    cJSON *content = cJSON_GetObjectItem(root, "content");
-    if (!content || !cJSON_IsString(content)) return;
-    
-    char *content_str = content->valuestring;
-    char decoded_content[256] = {0};
-    
-    // 尝试解码十六进制内容
-    if (decode_hex_content(content_str, decoded_content, sizeof(decoded_content))) {
-        ESP_LOGI(TAG, "解码系统消息: %s", decoded_content);
-        show_popup_message(decoded_content, 3000);
-    } else {
-        ESP_LOGI(TAG, "系统消息: %s", content_str);
-        show_popup_message(content_str, 3000);
-    }
-}
-
-// 构建菜品字符串（高性能版）- 使用静态缓冲区避免内存分配
-static const char* build_dishes_string(cJSON* items, char* buffer, size_t buffer_size) {
-    if (!items || !cJSON_IsArray(items) || !buffer || buffer_size == 0) return NULL;
-    
-    buffer[0] = '\0';
-    char *current_pos = buffer;
-    size_t remaining = buffer_size - 1;
-    int item_count = 0;
-    
-    cJSON *item = NULL;
-    cJSON_ArrayForEach(item, items) {
-        if (item_count >= MAX_DISHES_ITEMS) break;
-        
-        cJSON *name = cJSON_GetObjectItem(item, "name");
-        if (!cJSON_IsString(name)) continue;
-        
-        char *name_str = name->valuestring;
-        char decoded_name[MAX_DECODED_NAME_LEN] = {0};
-        
-        // 尝试解码十六进制菜品名
-        if (decode_hex_content(name_str, decoded_name, sizeof(decoded_name))) {
-            name_str = decoded_name;
-        }
-        
-        size_t name_len = strlen(name_str);
-        
-        // 添加分隔符（如果不是第一个菜品）
-        if (item_count > 0) {
-            if (remaining < 4) break; // 确保有足够空间
-            strncpy(current_pos, "、", remaining);
-            current_pos += 3;
-            remaining -= 3;
-        }
-        
-        // 添加菜品名
-        if (name_len >= remaining) break; // 空间不足
-        strncpy(current_pos, name_str, remaining);
-        current_pos += name_len;
-        remaining -= name_len;
-        item_count++;
+static void draw_button(uint16_t x, uint16_t y, uint16_t width, uint16_t height, uint16_t color) {
+    // 创建颜色缓冲区
+    uint16_t *color_buffer = malloc(width * height * sizeof(uint16_t));
+    if (color_buffer == NULL) {
+        ESP_LOGE(TAG, "内存分配失败");
+        return;
     }
     
-    return item_count > 0 ? buffer : NULL;
-}
-
-// 从订单ID生成订单号
-static int generate_order_number(const char* order_id) {
-    if (!order_id) return 1;
-    
-    int len = strlen(order_id);
-    int order_num = 1;
-    
-    if (len > 4) {
-        order_num = atoi(order_id + len - 4);
-    } else {
-        order_num = atoi(order_id);
+    // 填充颜色
+    for (int i = 0; i < width * height; i++) {
+        color_buffer[i] = color;
     }
     
-    return order_num > 0 ? order_num : 1;
+    // 绘制按钮背景
+    esp_lcd_panel_draw_bitmap(panel_handle, x, y, x + width, y + height, color_buffer);
+    // 添加延迟避免绘图冲突
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
+    free(color_buffer);
 }
 
-static int bleprph_chr_access(uint16_t conn_handle, uint16_t attr_handle,
-                             struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    switch (ctxt->op) {
-    case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-        // 高性能：使用静态缓冲区，避免栈内存分配
-        static uint8_t json_buf[JSON_BUFFER_SIZE];
-        static char dishes_buf[DISHES_BUFFER_SIZE];
-        uint16_t out_len = 0;
-        int rc = ble_hs_mbuf_to_flat(ctxt->om, json_buf, sizeof(json_buf), &out_len);
-        if (rc != 0) {
-            ESP_LOGE(TAG, "ble_hs_mbuf_to_flat failed: %d", rc);
-            return BLE_ATT_ERR_UNLIKELY;
-        }
-        
-        json_buf[out_len < sizeof(json_buf) ? out_len : sizeof(json_buf) - 1] = '\0';
-        
-        // 快速检查是否为简单消息（非JSON格式）
-        if (json_buf[0] != '{' && out_len < MAX_DECODED_CONTENT_LEN) {
-            char decoded_content[MAX_DECODED_CONTENT_LEN] = {0};
-            if (decode_hex_content((char *)json_buf, decoded_content, sizeof(decoded_content))) {
-                ESP_LOGW(TAG, "解码简单消息: %s", decoded_content);
-                show_popup_message(decoded_content, 1500); // 进一步缩短显示时间
-            }
-            return 0;
-        }
-        
-        // 优化：只在调试时记录完整JSON
-        #ifdef CONFIG_BLE_DEBUG_JSON
-        ESP_LOGI(TAG, "收到蓝牙JSON信息: %s", (char *)json_buf);
-        #endif
-        
-        cJSON *root = cJSON_Parse((char *)json_buf);
-        if (!root) {
-            return BLE_ATT_ERR_UNLIKELY;
-        }
+static void draw_border(uint16_t x, uint16_t y, uint16_t width, uint16_t height, uint16_t color) {
+    // 创建边框颜色缓冲区
+    uint16_t *border_buffer = malloc(width * 2 * sizeof(uint16_t));
+    if (border_buffer == NULL) {
+        ESP_LOGE(TAG, "内存分配失败");
+        return;
+    }
+    
+    // 填充边框颜色
+    for (int i = 0; i < width * 2; i++) {
+        border_buffer[i] = color;
+    }
+    
+    // 绘制上边框
+    esp_lcd_panel_draw_bitmap(panel_handle, x, y, x + width, y + 2, border_buffer);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    // 绘制下边框
+    esp_lcd_panel_draw_bitmap(panel_handle, x, y + height - 2, x + width, y + height, border_buffer);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    
+    free(border_buffer);
+    
+    // 创建垂直边框缓冲区
+    uint16_t *v_border_buffer = malloc(2 * height * sizeof(uint16_t));
+    if (v_border_buffer == NULL) {
+        ESP_LOGE(TAG, "内存分配失败");
+        return;
+    }
+    
+    // 填充垂直边框颜色
+    for (int i = 0; i < 2 * height; i++) {
+        v_border_buffer[i] = color;
+    }
+    
+    // 绘制左边框
+    esp_lcd_panel_draw_bitmap(panel_handle, x, y, x + 2, y + height, v_border_buffer);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    // 绘制右边框
+    esp_lcd_panel_draw_bitmap(panel_handle, x + width - 2, y, x + width, y + height, v_border_buffer);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    
+    free(v_border_buffer);
+}
 
-        // 检查操作类型
-        cJSON *type = cJSON_GetObjectItem(root, "type");
-        if (type && cJSON_IsString(type)) {
-            const char *type_str = type->valuestring;
-            
-            if (strcmp(type_str, "info") == 0) {
-                handle_system_message(root);
-            } else if (strcmp(type_str, "add") == 0 || strcmp(type_str, "update") == 0 || strcmp(type_str, "remove") == 0) {
-                bsp_display_lock(pdMS_TO_TICKS(500)); // 进一步减少锁等待时间
+static void touch_event_handler(void* arg) {
+    touch_event_t event;
+    uint16_t touch_x[10] = {0};
+    uint16_t touch_y[10] = {0};
+    uint16_t touch_strength[10] = {0};
+    uint8_t touch_num = 0;
+    bool last_pressed = false;
+    static uint32_t touch_count = 0;
+    
+    while (1) {
+        if (touch_handle != NULL) {
+            esp_err_t ret = esp_lcd_touch_read_data(touch_handle);
+            if (ret == ESP_OK) {
+                esp_lcd_touch_get_coordinates(touch_handle, touch_x, touch_y, touch_strength, &touch_num, 10);
                 
-                cJSON *id = cJSON_GetObjectItem(root, "orderId");
-                if (!id || !cJSON_IsString(id)) {
-                    ESP_LOGE(TAG, "无效的订单ID");
-                    bsp_display_unlock();
-                    cJSON_Delete(root);
-                    return 0;
-                }
-                
-                char *order_id = id->valuestring;
-                ESP_LOGI(TAG, "处理订单: type=%s, orderId=%s", type_str, order_id);
-                
-                if (strcmp(type_str, "remove") == 0) {
-                    remove_order_by_id(order_id);
-                    show_popup_message("订单已删除", 1000); // 缩短显示时间
-                } else {
-                    cJSON *items = cJSON_GetObjectItem(root, "items");
-                    const char *dishes_str = "无菜品";
-                    
-                    if (items && cJSON_IsArray(items) && cJSON_GetArraySize(items) > 0) {
-                        dishes_str = build_dishes_string(items, dishes_buf, sizeof(dishes_buf));
-                    }
-                    
-                    int order_num = generate_order_number(order_id);
-                    
-                    if (strcmp(type_str, "add") == 0) {
-                        create_dynamic_order_row_with_id(order_id, order_num, dishes_str);
-                        show_popup_message("订单已添加", 1000);
+                // 每100次循环打印一次触摸状态用于调试
+                if (touch_count++ % 100 == 0) {
+                    if (touch_num > 0) {
+                        ESP_LOGI(TAG, "触摸状态: 点数=%d", touch_num);
+                        for (int i = 0; i < touch_num; i++) {
+                            ESP_LOGI(TAG, "  点%d: 坐标=(%d,%d), 强度=%d", 
+                                    i, touch_x[i], touch_y[i], touch_strength[i]);
+                        }
                     } else {
-                        update_order_by_id(order_id, order_num, dishes_str);
-                        show_popup_message("订单已更新", 1000);
+                        ESP_LOGI(TAG, "触摸状态: 点数=0");
                     }
                 }
-                
-                bsp_display_unlock();
+            } else {
+                // 每100次循环打印一次错误用于调试
+                if (touch_count++ % 100 == 0) {
+                    ESP_LOGW(TAG, "触摸读取失败: %d", ret);
+                }
+            }
+        } else {
+            // 触摸手柄为空，触摸功能不可用
+            if (touch_count++ % 100 == 0) {
+                ESP_LOGW(TAG, "触摸功能不可用");
+            }
+            touch_num = 0;
+        }
+        
+        bool current_pressed = (touch_num > 0);
+        
+        // 只在状态变化时发送事件
+        if (current_pressed && !last_pressed) {
+            // 坐标转换：触摸芯片坐标可能需要转换到屏幕坐标
+            // 根据屏幕分辨率800x1280进行适配
+            event.x = touch_x[0];
+            event.y = touch_y[0];
+            
+            // 如果触摸坐标超出屏幕范围，进行缩放适配
+            if (event.x > BSP_LCD_H_RES) {
+                event.x = BSP_LCD_H_RES - 1;
+            }
+            if (event.y > BSP_LCD_V_RES) {
+                event.y = BSP_LCD_V_RES - 1;
+            }
+            
+            event.pressed = true;
+            if (xQueueSend(touch_event_queue, &event, 0) == pdTRUE) {
+                ESP_LOGI(TAG, "触摸按下: 点数=%d", touch_num);
+                for (int i = 0; i < touch_num; i++) {
+                    ESP_LOGI(TAG, "  点%d: X=%d, Y=%d, 强度=%d", i, touch_x[i], touch_y[i], touch_strength[i]);
+                }
             }
         }
-
-        cJSON_Delete(root);
-        return 0;
+        
+        last_pressed = current_pressed;
+        vTaskDelay(pdMS_TO_TICKS(20)); // 更快的检测频率
     }
-    case BLE_GATT_ACCESS_OP_READ_CHR: {
-        const char *resp = "OK";
-        int rc = os_mbuf_append(ctxt->om, resp, strlen(resp));
-        return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
-    }
-    default:
-        return BLE_ATT_ERR_UNLIKELY;
-    }
-}
-
-/* 蓝牙GAP事件处理 */
-static int bleprph_gap_event(struct ble_gap_event *event, void *arg)
-{
-    switch (event->type) {
-    case BLE_GAP_EVENT_CONNECT:
-        if (event->connect.status == 0) {
-            g_conn_handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "Connected, handle=%d", event->connect.conn_handle);
-        } else {
-            ESP_LOGI(TAG, "Connect failed; status=%d", event->connect.status);
-            bleprph_advertise();
-        }
-        return 0;
-
-    case BLE_GAP_EVENT_DISCONNECT:
-        g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        ESP_LOGI(TAG, "Disconnected; reason=%d", event->disconnect.reason);
-        bleprph_advertise();
-        return 0;
-
-    case BLE_GAP_EVENT_ADV_COMPLETE:
-        ESP_LOGI(TAG, "Advertising complete");
-        bleprph_advertise();
-        return 0;
-
-    default:
-        return 0;
-    }
-}
-
-/* 蓝牙广播 */
-static void bleprph_advertise(void)
-{
-    struct ble_gap_adv_params adv_params = {0};
-    struct ble_hs_adv_fields fields = {0};
-    struct ble_hs_adv_fields rsp_fields = {0};
-    const char *name = "MuLan";
-    int rc;
-    uint8_t own_addr_type;
-
-    ble_hs_util_ensure_addr(0);
-    rc = ble_hs_id_infer_auto(0, &own_addr_type);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "infer addr type failed; rc=%d", rc);
-        return;
-    }
-
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.tx_pwr_lvl_is_present = 1;
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-    fields.name = (uint8_t *)name;
-    fields.name_len = strlen(name);
-    fields.name_is_complete = 1;
-    fields.uuids16 = (ble_uuid16_t[]){ BLE_UUID16_INIT(0xABCD) };
-    fields.num_uuids16 = 1;
-    fields.uuids16_is_complete = 1;
-
-    rsp_fields.uuids16 = (ble_uuid16_t[]){ BLE_UUID16_INIT(0xABCD) };
-    rsp_fields.num_uuids16 = 1;
-    rsp_fields.uuids16_is_complete = 1;
-
-    rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "adv set fields failed; rc=%d", rc);
-        return;
-    }
-    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "adv rsp set fields failed; rc=%d", rc);
-        return;
-    }
-
-    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
-    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-
-    rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER,
-                           &adv_params, bleprph_gap_event, NULL);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "adv start failed; rc=%d", rc);
-        return;
-    }
-    ESP_LOGI(TAG, "Advertising started: %s", name);
-}
-
-/* 蓝牙同步回调 */
-static void bleprph_on_sync(void)
-{
-    uint8_t own_addr_type;
-    uint8_t addr_val[6];
-    int rc;
-
-    ble_hs_util_ensure_addr(0);
-    rc = ble_hs_id_infer_auto(0, &own_addr_type);
-    if (rc == 0 && ble_hs_id_copy_addr(own_addr_type, addr_val, NULL) == 0) {
-        ESP_LOGI(TAG, "Device Address: %02x:%02x:%02x:%02x:%02x:%02x",
-                 addr_val[5], addr_val[4], addr_val[3],
-                 addr_val[2], addr_val[1], addr_val[0]);
-    }
-
-    bleprph_advertise();
-}
-
-/* 蓝牙重置回调 */
-static void bleprph_on_reset(int reason)
-{
-    ESP_LOGE(TAG, "Resetting state; reason=%d", reason);
-}
-
-/* 蓝牙主机任务 */
-static void bleprph_host_task(void *param)
-{
-    ESP_LOGI(TAG, "BLE Host Task Started");
-    nimble_port_run();
-    nimble_port_freertos_deinit();
 }
 
 void app_main(void)
 {
-    // 初始化NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    // 初始化蓝牙
-    ret = nimble_port_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init failed: %d", ret);
-        return;
-    }
-
-    ble_svc_gap_init();
-    ble_svc_gatt_init();
-
-    ble_hs_cfg.reset_cb = bleprph_on_reset;
-    ble_hs_cfg.sync_cb = bleprph_on_sync;
-
-    int rc = ble_svc_gap_device_name_set("MuLan");
-    if (rc != 0) {
-        ESP_LOGE(TAG, "set device name failed; rc=%d", rc);
-    }
-
-    rc = ble_gatts_count_cfg(gatt_svcs);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gatts_count_cfg failed; rc=%d", rc);
-        return;
-    }
-    rc = ble_gatts_add_svcs(gatt_svcs);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gatts_add_svcs failed; rc=%d", rc);
-        return;
-    }
-
-    nimble_port_freertos_init(bleprph_host_task);
-
-    // 进一步优化显示配置 - 30Hz刷新率 + 单缓冲区
-    bsp_display_cfg_t cfg = {
-        .lvgl_port_cfg = {
-            .task_priority = 10,     // 最高优先级确保字体渲染
-            .task_stack = 32768,     // 进一步增加堆栈
-            .task_affinity = -1,
-            .task_max_sleep_ms = 0,  // 无睡眠时间
-            .timer_period_ms = 33     // 30Hz刷新率
-        },
-        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE * 16,  // 16倍缓冲区
-        .double_buffer = false,      // 单缓冲区模式
-        .flags = {
-            .buff_dma = true,        // DMA加速
-            .buff_spiram = true,     // SPIRAM内存
-            .sw_rotate = false,
-        }
+    ESP_LOGI(TAG, "开始屏幕和触控测试");
+    
+    // 初始化显示 - 使用空的配置结构
+    bsp_display_config_t display_config = {
+        .dummy = 0,
     };
-    // LVGL内存配置通过lv_conf.h文件设置，此处仅配置显示参数
-    bsp_display_start_with_config(&cfg);
+    
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    if (bsp_display_new(&display_config, &panel_handle, &io_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "显示初始化失败");
+        return;
+    }
+    
+    // 初始化触摸 - 使用正确的配置结构
+    bsp_touch_config_t touch_config = {
+        .dummy = 0,
+    };
+    
+    // 触摸初始化，允许重试
+    esp_err_t touch_ret;
+    int retry_count = 0;
+    do {
+        touch_ret = bsp_touch_new(&touch_config, &touch_handle);
+        if (touch_ret != ESP_OK) {
+            ESP_LOGW(TAG, "触摸初始化失败，重试 %d/3", retry_count + 1);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        retry_count++;
+    } while (touch_ret != ESP_OK && retry_count < 3);
+    
+    if (touch_ret != ESP_OK) {
+        ESP_LOGE(TAG, "触摸初始化最终失败，但继续运行程序");
+        // 不返回，继续运行程序，触摸功能可能不可用
+    } else {
+        ESP_LOGI(TAG, "触摸初始化成功");
+    }
+    
+    // 创建触摸事件队列
+    touch_event_queue = xQueueCreate(10, sizeof(touch_event_t));
+    
+    // 创建触摸处理任务
+    xTaskCreate(touch_event_handler, "touch_handler", 4096, NULL, 5, NULL);
+    
+    // 清屏为白色
+    uint16_t *white_buffer = malloc(BSP_LCD_H_RES * 80 * sizeof(uint16_t));
+    if (white_buffer) {
+        for (int i = 0; i < BSP_LCD_H_RES * 80; i++) {
+            white_buffer[i] = WHITE_COLOR;
+        }
+        // 分块绘制以避免内存不足
+        for (int y = 0; y < BSP_LCD_V_RES; y += 80) {
+            int height = (y + 80 <= BSP_LCD_V_RES) ? 80 : (BSP_LCD_V_RES - y);
+            esp_lcd_panel_draw_bitmap(panel_handle, 0, y, BSP_LCD_H_RES, y + height, white_buffer);
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        free(white_buffer);
+    }
+    
+    // 绘制测试按钮
+    uint16_t button_x = (BSP_LCD_H_RES - 200) / 2;
+    uint16_t button_y = (BSP_LCD_V_RES - 80) / 2;
+    
+    draw_button(button_x, button_y, 200, 80, GREEN_COLOR);
+    draw_border(button_x, button_y, 200, 80, BLACK_COLOR);
+    
+    // 设置背光为100%
     bsp_display_backlight_on();
-
-    // 优化UI初始化
-    bsp_display_lock(0);
-    create_order_ui();  // 使用已定义的函数
-    bsp_display_unlock();
+    ESP_LOGI(TAG, "背光已开启");
+    
+    ESP_LOGI(TAG, "屏幕测试程序已启动");
+    ESP_LOGI(TAG, "屏幕分辨率: %dx%d", BSP_LCD_H_RES, BSP_LCD_V_RES);
+    ESP_LOGI(TAG, "按钮位置: X=%d, Y=%d", button_x, button_y);
+    
+    // 主循环处理触摸事件
+    touch_event_t event;
+    while (1) {
+        if (xQueueReceive(touch_event_queue, &event, portMAX_DELAY) == pdTRUE) {
+            ESP_LOGI(TAG, "收到触摸事件: X=%d, Y=%d", event.x, event.y);
+            
+            // 检查是否点击了按钮区域
+            if (event.pressed && 
+                event.x >= button_x && event.x <= button_x + 200 &&
+                event.y >= button_y && event.y <= button_y + 80) {
+                ESP_LOGI(TAG, "按钮被点击! 坐标范围: X[%d-%d], Y[%d-%d]", 
+                        button_x, button_x + 200, button_y, button_y + 80);
+                
+                // 按钮点击反馈 - 改变颜色
+                draw_button(button_x, button_y, 200, 80, BLUE_COLOR);
+                draw_border(button_x, button_y, 200, 80, BLACK_COLOR);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                draw_button(button_x, button_y, 200, 80, GREEN_COLOR);
+                draw_border(button_x, button_y, 200, 80, BLACK_COLOR);
+            } else {
+                ESP_LOGI(TAG, "点击位置不在按钮区域");
+            }
+        }
+    }
 }

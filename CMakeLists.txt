@@ -4,13 +4,10 @@ cmake_minimum_required(VERSION 3.5)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-set(EXTRA_COMPONENT_DIRS
-    ./common_components
-    )
+
 
 add_compile_options(-Wno-format)
 add_compile_options(-Wno-ignored-qualifiers)
 add_compile_options(-Wno-attributes)
 add_compile_options(-Wno-unused-function)
-include_directories(${CMAKE_CURRENT_LIST_DIR}/main/conf)
-project(lvgl_demo_v9)
+project(esp_idf_project)
